@@ -87,7 +87,7 @@
   <h1>DungKey Tracker</h1>
   <p>RS3 Dungeoneering key/door tracker.<br>Click the button below to install this app into Alt1.</p>
 
-  <button class="btn" id="install-btn">Add to Alt1</button>
+  <a class="btn" id="install-btn" href="#">Add to Alt1</a>
 
   <div id="msg" class="note"></div>
 
@@ -115,33 +115,40 @@
     const configUrl = window.location.origin + '/appconfig.json';
     document.getElementById('cfg-url').textContent = configUrl;
 
+    // Primary install path: the `alt1://addapp/<configUrl>` protocol
+    // URL. This triggers Alt1's full install confirm dialog. The
+    // previously-tried `alt1.identifyAppUrl()` API registers the app
+    // silently on some Alt1 builds (no dialog, user thinks nothing
+    // happened). The protocol URL is the canonical "Add this app"
+    // path across Alt1 versions.
+    const installUrl = 'alt1://addapp/' + configUrl;
+    const installBtn = document.getElementById('install-btn');
+    installBtn.href = installUrl;
+
     const msg = document.getElementById('msg');
     function say(text, color) {
       msg.textContent = text;
       msg.style.color = color || '#bbb';
     }
 
-    document.getElementById('install-btn').addEventListener('click', () => {
-      // Method 1: Alt1's native API (works when inside Alt1's built-in browser)
-      if (window.alt1 && typeof alt1.identifyAppUrl === 'function') {
-        try {
-          alt1.identifyAppUrl(configUrl);
-          say('Install request sent to Alt1. Look for its confirmation dialog.', '#6ee09a');
-          return;
-        } catch (e) {
-          say('alt1.identifyAppUrl threw: ' + e.message, '#ff8a8a');
+    installBtn.addEventListener('click', (e) => {
+      // If the anchor's href fires natively, Alt1's CEF intercepts
+      // the alt1:// protocol and shows the install dialog. We let
+      // the default navigation happen (no preventDefault) and just
+      // update the status message.
+      say('Opening Alt1 install dialog\u2026 if nothing appears, make sure this page is inside Alt1\u2019s built-in browser.', '#6ee09a');
+
+      // Belt-and-braces: also try the native API as a fallback in
+      // case the protocol URL is blocked by the embedded browser's
+      // security. Fires a few hundred ms after so it doesn't race
+      // with the primary navigation.
+      setTimeout(() => {
+        if (window.alt1 && typeof alt1.identifyAppUrl === 'function') {
+          try { alt1.identifyAppUrl(configUrl); } catch (_) {}
         }
-      }
-      // Method 2: Protocol URL (works when OS has alt1:// handler registered)
-      try {
-        window.location.href = 'alt1://addapp/' + configUrl;
-        say('Opened alt1:// protocol URL. If nothing happens, Alt1 isn\u2019t registered as the handler for alt1:// links.', '#f5c842');
-      } catch (e) {
-        say('Navigation failed: ' + e.message, '#ff8a8a');
-      }
+      }, 500);
     });
 
-    // Auto-detect on load
     if (window.alt1) {
       say('Alt1 detected \u2014 click the button to install.', '#6ee09a');
     } else {
