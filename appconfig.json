@@ -8,5 +8,5 @@
   "defaultHeight": 460,
   "minWidth": 240,
   "maxWidth": 560,
-  "permissions": ["pixel", "overlay"]
+  "permissions": "pixel,overlay"
 }
