@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Install DungKey Tracker</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 30px;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      text-align: center;
+    }
+    h1 {
+      color: #f5c842;
+      margin: 0 0 10px;
+      font-size: 22px;
+    }
+    p { color: #bbb; margin: 8px 0 24px; line-height: 1.5; }
+    .btn {
+      display: inline-block;
+      background: #2a9d4f;
+      color: white;
+      text-decoration: none;
+      padding: 14px 28px;
+      border-radius: 5px;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      border: 1px solid #1f7a3c;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+    }
+    .btn:hover { background: #32b85a; }
+    code {
+      background: #2a2a2a;
+      color: #f5c842;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: Consolas, monospace;
+    }
+    .note {
+      margin-top: 36px;
+      padding-top: 14px;
+      border-top: 1px solid #333;
+      color: #888;
+      font-size: 12px;
+    }
+    .setup {
+      margin: 36px auto 0;
+      max-width: 560px;
+      text-align: left;
+      padding: 16px 20px;
+      background: #2a2416;
+      border-left: 3px solid #c9a86a;
+      border-radius: 4px;
+      color: #d0c6b0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .setup h2 {
+      color: #f5e0a8;
+      font-size: 15px;
+      margin: 0 0 10px;
+    }
+    .setup ol {
+      padding-left: 20px;
+      margin: 8px 0 0;
+    }
+    .setup li {
+      margin-bottom: 8px;
+    }
+    .setup strong { color: #f5e0a8; }
+    .setup .warn {
+      margin-top: 14px;
+      padding: 10px 12px;
+      background: #3d1b1b;
+      border-left: 3px solid #c94a4a;
+      border-radius: 3px;
+      color: #f5c0c0;
+      font-size: 12.5px;
+    }
+    .setup .warn strong { color: #ffb8b8; }
+  </style>
+</head>
+<body>
+  <h1>DungKey Tracker</h1>
+  <p>RS3 Dungeoneering key/door tracker.<br>Click the button below to install this app into Alt1.</p>
+
+  <button class="btn" id="install-btn">Add to Alt1</button>
+
+  <div id="msg" class="note"></div>
+
+  <div class="setup">
+    <h2>Before your first dungeon</h2>
+    <ol>
+      <li>Open the plugin in Alt1, click <strong>Settings</strong> in the header.</li>
+      <li>Enter <strong>Your name</strong> (your in-game RSN) in the first field.</li>
+      <li>Under <strong>Calibration</strong>, click <strong>Calibrate</strong> next to <strong>Ring of Kinship</strong> and follow the two-hover prompts (hover top-left corner, then bottom-right).</li>
+      <li>Do the same for <strong>DG Map</strong>.</li>
+      <li>Close the Settings panel with <strong>Done</strong>.</li>
+    </ol>
+
+    <div class="warn">
+      <strong>Important:</strong> the Ring of Kinship party interface must be <strong>open while you're in a floor</strong>. RS3 does <strong>not</strong> re-open it automatically when you enter a new floor from Daemonheim \u2014 open it once (right-click the Ring of Kinship accessory \u2192 Party) and leave it open. Without this panel visible, the plugin can't auto-detect your slot colour or teammates' names, and multi-party door pinning on the DG map will not work.
+    </div>
+  </div>
+
+  <div class="note">
+    If this page isn't opened <em>inside Alt1's built-in browser</em> the button won't work.<br><br>
+    Manifest URL: <code id="cfg-url"></code>
+  </div>
+
+  <script>
+    const configUrl = window.location.origin + '/appconfig.json';
+    document.getElementById('cfg-url').textContent = configUrl;
+
+    const msg = document.getElementById('msg');
+    function say(text, color) {
+      msg.textContent = text;
+      msg.style.color = color || '#bbb';
+    }
+
+    document.getElementById('install-btn').addEventListener('click', () => {
+      // Method 1: Alt1's native API (works when inside Alt1's built-in browser)
+      if (window.alt1 && typeof alt1.identifyAppUrl === 'function') {
+        try {
+          alt1.identifyAppUrl(configUrl);
+          say('Install request sent to Alt1. Look for its confirmation dialog.', '#6ee09a');
+          return;
+        } catch (e) {
+          say('alt1.identifyAppUrl threw: ' + e.message, '#ff8a8a');
+        }
+      }
+      // Method 2: Protocol URL (works when OS has alt1:// handler registered)
+      try {
+        window.location.href = 'alt1://addapp/' + configUrl;
+        say('Opened alt1:// protocol URL. If nothing happens, Alt1 isn\u2019t registered as the handler for alt1:// links.', '#f5c842');
+      } catch (e) {
+        say('Navigation failed: ' + e.message, '#ff8a8a');
+      }
+    });
+
+    // Auto-detect on load
+    if (window.alt1) {
+      say('Alt1 detected \u2014 click the button to install.', '#6ee09a');
+    } else {
+      say('Not running inside Alt1\u2019s built-in browser. Open Alt1 \u2192 browse to this page inside Alt1.', '#f5c842');
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "appName": "DungKey Tracker",
+  "description": "RS3 Dungeoneering key/door tracker — watches chat for keys found, doors info'd, and keys used.",
+  "appUrl": "./index.html",
+  "configUrl": "./appconfig.json",
+  "iconUrl": "./icon.png",
+  "defaultWidth": 320,
+  "defaultHeight": 460,
+  "minWidth": 240,
+  "maxWidth": 560,
+  "permissions": ["pixel", "overlay"]
+}

@@ -1,0 +1,38 @@
+# Netlify build config for DungKey Tracker.
+# Builds the production webpack bundle and publishes the dist/ folder.
+# Source repository stays private on GitHub; only the built bundle is
+# exposed at the Netlify URL.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Node version — pinned to an LTS release to avoid surprises on
+# Netlify's build workers. Align with whatever you use locally if
+# this mismatches. Currently targets 20.x (current LTS as of shipping).
+[build.environment]
+  NODE_VERSION = "20"
+
+# Cache-control headers. The bundle filename is content-hashed
+# (bundle.<hash>.js per webpack config), so browsers can cache it
+# aggressively. index.html / appconfig.json / install.html change
+# rarely but should NOT be cached hard, so Alt1 picks up updates.
+[[headers]]
+  for = "/bundle.*.js"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/appconfig.json"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/install.html"
+  [headers.values]
+    Cache-Control = "no-cache"

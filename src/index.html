@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>DungKey Tracker</title>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>DungKey Tracker</h1>
+      <div class="header-actions">
+        <button id="reset-btn" title="Clear tracked keys &amp; doors">Reset</button>
+        <button id="settings-btn" title="Open the settings + calibration panel">Settings</button>
+      </div>
+    </header>
+
+    <div id="status"></div>
+
+    <section class="block">
+      <h2>Doors <span class="count" id="doors-count">0</span></h2>
+      <ul id="doors-list"></ul>
+    </section>
+
+    <section class="block">
+      <h2>Unmatched Keys <span class="count" id="keys-count">0</span></h2>
+      <ul id="keys-list"></ul>
+    </section>
+
+    <footer>
+      <small>Right-click Info on a locked door in-game to register it.</small>
+    </footer>
+
+    <section class="block floors-block">
+      <h2>
+        Floors <span class="count" id="floors-count">0</span>
+        <span class="count avg-display" id="floors-avg" title="Average time of the most recent 11 floors with recorded timers" hidden></span>
+        <button id="floors-toggle" class="mini-btn" title="Show/hide the floor list. Collapsed by default to save window space.">Show</button>
+        <button id="floors-export" class="mini-btn" title="Copy the floor log to clipboard as CSV (startedAt, endedAt, time, timeSeconds). Falls back to debug log if clipboard is blocked.">Export CSV</button>
+        <button id="floors-clear" class="mini-btn" title="Clear the entire floor log (persistent \u2014 removes from localStorage too). Click once to arm, click again within 3s to confirm.">Clear</button>
+      </h2>
+      <ul id="floors-list" hidden></ul>
+    </section>
+
+    <section class="block slots-block">
+      <h2>
+        Party Slots <span class="count" id="slots-count">0</span>
+        <span class="slots-hint" id="slots-hint" title="Read-only view of the Ring of Kinship interface. Shows each filled slot's in-game colour and OCR'd name. Self-slot is auto-detected by matching OCR'd names against your own name (Settings \u2192 Your name)."></span>
+      </h2>
+      <ul id="slots-list"></ul>
+    </section>
+
+    <section class="block history-block">
+      <h2>
+        Previous Floor Keys <span class="count" id="history-count">0</span>
+        <button id="history-toggle" class="mini-btn" title="Show/hide the unlock-time breakdown for the floor you just finished">Show</button>
+      </h2>
+      <ul id="history-list" hidden></ul>
+    </section>
+
+    <section class="block debug-block" id="debug-section">
+      <h2>
+        Debug
+        <span class="count" id="debug-stats" title="Tick counter (alternates 1/2 every poll \u2014 hover for details)">\u2026</span>
+        <button id="debug-toggle" class="mini-btn" title="Show/hide the debug log. Counter stays visible either way.">Show</button>
+        <button id="debug-clear" class="mini-btn" title="Clear debug log">Clear</button>
+      </h2>
+      <ul id="debug-list" hidden></ul>
+    </section>
+
+    <!-- Settings + Calibration + Diagnostics modal. Everything the user
+         sets up once (or uses rarely) lives here so the main window
+         stays focused on runtime state. Closed via Done / backdrop
+         click / Escape. -->
+    <div id="settings-modal" class="modal" hidden>
+      <div class="modal-backdrop" id="settings-modal-backdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+        <div class="modal-header">
+          <h2 id="settings-modal-title">Settings</h2>
+          <button id="settings-done" class="mini-btn" title="Close the settings panel">Done</button>
+        </div>
+        <div class="modal-body">
+          <label class="setting-row">
+            <span class="setting-label">Your name</span>
+            <input type="text" id="settings-name" placeholder="Your in-game name (e.g. Aari the Iceborn)"
+              title="Your in-game name. Used as the baseline for self-attribution when door-info events fire. Teammates are auto-discovered from the Ring of Kinship panel \u2014 no need to type them here."
+              autocomplete="off" spellcheck="false">
+            <small class="setting-hint">Baseline entry for self-detection. Teammates are auto-discovered from the Ring of Kinship panel \u2014 no need to type them here.</small>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">Max floors kept</span>
+            <input type="number" id="settings-max-floors" min="10" max="100" step="1" value="100">
+            <small class="setting-hint">When the log exceeds this, the oldest floor is auto-dropped. Hard cap 100; Dungeoneering has only 60 floors so 100 comfortably covers any single session.</small>
+          </label>
+          <div class="setting-row">
+            <label class="setting-check">
+              <input type="checkbox" id="settings-timestamped-chat">
+              <span class="setting-label">Use chat timestamps for pin accuracy</span>
+            </label>
+            <small class="setting-hint">Requires chat timestamps enabled in RS3 (Game Settings \u2192 Chat \u2192 Show timestamps). Bypasses the info\u2192teleport race by matching door-info events to a historical map snapshot at the chat line's in-game timestamp.</small>
+          </div>
+          <div class="setting-row">
+            <label class="setting-check">
+              <input type="checkbox" id="settings-show-debug">
+              <span class="setting-label">Show debug panel</span>
+            </label>
+            <small class="setting-hint">Shows the raw OCR + match/miss log at the bottom of the window. Useful when diagnosing OCR or palette issues. Hide to save screen space when everything's working.</small>
+          </div>
+          <label class="setting-row">
+            <span class="setting-label">Floor log webhook URL</span>
+            <input type="url" id="settings-floor-webhook" placeholder="https://script.google.com/macros/s/\u2026/exec" autocomplete="off" spellcheck="false">
+            <small class="setting-hint">Optional. Plugin POSTs each completed floor's timer row to this URL as JSON. Typical target: a Google Sheet with an Apps Script doPost handler deployed as a web app. Empty to disable.</small>
+          </label>
+          <div class="setting-row">
+            <button id="settings-clear-teammates" class="mini-btn" title="Wipes the auto-discovered teammate list from your roster, keeping only your own name. Next RoK panel read re-populates from whatever party you're currently in.">Clear known teammates</button>
+            <small class="setting-hint">Keeps your name but wipes auto-discovered teammates. Next RoK panel read re-populates from the current party.</small>
+          </div>
+
+          <div class="modal-subtitle">Calibration <span class="cal-hint" title="Calibrate each scan target once so the plugin knows exactly where to look. For Winterface, open the end-of-floor dialog in-game THEN click Calibrate. For Ring of Kinship and DG Map, the plugin will prompt you to hover the top-left and bottom-right corners. \u2713 = calibrated. \u26A0 = not set."></span></div>
+          <div id="calibration-panel">
+            <div class="cal-row" id="cal-row-winterface">
+              <span class="cal-label">Winterface</span>
+              <span class="cal-status" id="cal-status-winterface">\u26A0 not calibrated</span>
+              <button class="cal-btn" id="cal-btn-winterface" title="Open the end-of-floor winterface dialog in-game, then click this button. The plugin captures the dialog's position and uses it as the anchor for future timer OCR.">Calibrate</button>
+              <button class="cal-btn cal-clear" id="cal-clear-winterface" title="Clear saved winterface calibration. Plugin will fall back to full-screen dynamic detection.">Clear</button>
+            </div>
+            <div class="cal-row" id="cal-row-chat">
+              <span class="cal-label">Chat</span>
+              <span class="cal-status" id="cal-status-chat">\u26A0 not located</span>
+              <button class="cal-btn" id="cal-btn-chat" title="Re-find the chatbox on screen. Useful if you moved it or it wasn't located on plugin start.">Refind</button>
+            </div>
+            <div class="cal-row" id="cal-row-party">
+              <span class="cal-label">Ring of Kinship</span>
+              <span class="cal-status" id="cal-status-party">\u26A0 not calibrated</span>
+              <button class="cal-btn" id="cal-btn-party" title="Define the scan region for the Ring of Kinship party interface. You'll hover TL then BR corners over 3s each.">Calibrate</button>
+              <button class="cal-btn cal-clear" id="cal-clear-party" title="Clear saved calibration for this metric.">Clear</button>
+            </div>
+            <div class="cal-row" id="cal-row-dgmap">
+              <span class="cal-label">DG Map</span>
+              <span class="cal-status" id="cal-status-dgmap">\u26A0 not calibrated</span>
+              <button class="cal-btn" id="cal-btn-dgmap" title="Define the scan region for the DG map widget. You'll hover TL then BR corners over 3s each.">Calibrate</button>
+              <button class="cal-btn cal-clear" id="cal-clear-dgmap" title="Clear saved calibration for this metric.">Clear</button>
+            </div>
+          </div>
+
+          <div class="modal-subtitle">Diagnostics</div>
+          <div class="diagnostics-row">
+            <button id="eyedrop-btn" class="mini-btn" title="Click, then hover your mouse over a pixel (e.g. the 'B' of 'Blue wedge key' in chat). After 3s, the RGB is logged in the debug panel.">Eyedrop</button>
+            <button id="calibrate-btn" class="mini-btn" title="Run a layout check. For best results, open the end-dungeon winterface first so every step can be validated. Results + suggested fixes are dumped to the debug panel.">Run layout test</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
