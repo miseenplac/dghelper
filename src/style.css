@@ -43,6 +43,49 @@ header h1 {
 }
 .header-actions button:hover { background: #3a3a3a; }
 
+/* Top-level tab nav. Two tabs: Tracker (full UI) and Floors (stream view).
+   Active state echoes the header's brand gold so it reads as a clear
+   selection without competing with the existing block accents. */
+nav.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 0 8px 0;
+  padding: 0;
+  border-bottom: 1px solid #333;
+}
+nav.tabs .tab-btn {
+  background: #1f1f1f;
+  color: #888;
+  border: 1px solid #333;
+  border-bottom: none;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 3px 3px 0 0;
+  letter-spacing: 0.3px;
+  margin-bottom: -1px;
+}
+nav.tabs .tab-btn:hover { background: #2a2a2a; color: #ccc; }
+nav.tabs .tab-btn.active {
+  background: #1a1a1a;
+  color: #f5c842;
+  border-color: #555;
+  border-bottom-color: #1a1a1a;
+}
+
+/* Floors-only stream view: hide every block except the floor log, hide the
+   footer hint, and hide the Show/Hide toggle since the list is forced
+   visible (overrides the [hidden] state on #floors-list). */
+#app[data-active-tab="floors"] .block:not(.floors-block) { display: none; }
+#app[data-active-tab="floors"] footer { display: none; }
+#app[data-active-tab="floors"] #floors-toggle { display: none; }
+#app[data-active-tab="floors"] #floors-list { display: block !important; }
+
+/* Tracker tab hides the floors block — the floor log lives entirely in the
+   Floors tab now (avoids duplicate display + competing Show/Hide state). */
+#app[data-active-tab="tracker"] .floors-block { display: none; }
+
 #status {
   padding: 5px 7px;
   margin-bottom: 8px;

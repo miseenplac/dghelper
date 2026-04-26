@@ -738,7 +738,7 @@ function renderFloors(log) {
     } else {
       const mean = window.reduce((a, f) => a + f.timeSeconds, 0) / window.length;
       floorsAvgEl.hidden = false;
-      floorsAvgEl.textContent = `avg ${formatMMSS(mean)}`;
+      floorsAvgEl.textContent = `avg ${formatMMSS(mean)} · ${window.length} floor${window.length === 1 ? '' : 's'}`;
       floorsAvgEl.title = `mean of last ${window.length} floor(s) with recorded timers`
         + (window.length < FLOORS_AVG_WINDOW ? ` (fewer than ${FLOORS_AVG_WINDOW} available)` : '');
     }
@@ -809,6 +809,43 @@ if (floorsToggleBtn) {
 // is impossible — we get the current snapshot via the initial manual call.
 floor.onChange(renderFloors);
 renderFloors(floor.getAll());
+
+// ---- Tab nav -------------------------------------------------------------
+// Two top-level tabs: Tracker (full UI) and Floors (stream-friendly view —
+// hides everything except the floor log). Active choice persists across
+// reloads in localStorage. The Floors view reuses the existing #floors-list
+// render path; CSS rules on #app[data-active-tab="floors"] hide non-floor
+// blocks and force the list visible regardless of the Show/Hide toggle.
+
+const TAB_STORAGE_KEY = 'dkt:activeTab:v1';
+const tabTrackerBtn = document.getElementById('tab-tracker');
+const tabFloorsBtn  = document.getElementById('tab-floors');
+const appEl         = document.getElementById('app');
+
+function setActiveTab(name) {
+  const tab = (name === 'floors') ? 'floors' : 'tracker';
+  if (appEl) appEl.dataset.activeTab = tab;
+  if (tabTrackerBtn) {
+    const active = (tab === 'tracker');
+    tabTrackerBtn.classList.toggle('active', active);
+    tabTrackerBtn.setAttribute('aria-selected', active ? 'true' : 'false');
+  }
+  if (tabFloorsBtn) {
+    const active = (tab === 'floors');
+    tabFloorsBtn.classList.toggle('active', active);
+    tabFloorsBtn.setAttribute('aria-selected', active ? 'true' : 'false');
+  }
+  try { localStorage.setItem(TAB_STORAGE_KEY, tab); } catch (_) {}
+}
+
+if (tabTrackerBtn) tabTrackerBtn.addEventListener('click', () => setActiveTab('tracker'));
+if (tabFloorsBtn)  tabFloorsBtn.addEventListener('click',  () => setActiveTab('floors'));
+
+(function loadActiveTab() {
+  let stored = null;
+  try { stored = localStorage.getItem(TAB_STORAGE_KEY); } catch (_) {}
+  setActiveTab(stored === 'floors' ? 'floors' : 'tracker');
+})();
 
 // ---- Calibration UI ------------------------------------------------------
 // Two-hover capture flow: user clicks Calibrate → UI prompts for TL hover

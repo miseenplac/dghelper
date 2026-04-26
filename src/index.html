@@ -14,6 +14,11 @@
       </div>
     </header>
 
+    <nav class="tabs" role="tablist">
+      <button class="tab-btn active" id="tab-tracker" role="tab" aria-selected="true" title="Full tracker view (doors, keys, slots, floors, debug).">Tracker</button>
+      <button class="tab-btn" id="tab-floors" role="tab" aria-selected="false" title="Stream-friendly view: only the floor log, always expanded.">Floors</button>
+    </nav>
+
     <div id="status"></div>
 
     <section class="block">
@@ -41,20 +46,20 @@
       <ul id="floors-list" hidden></ul>
     </section>
 
-    <section class="block slots-block">
-      <h2>
-        Party Slots <span class="count" id="slots-count">0</span>
-        <span class="slots-hint" id="slots-hint" title="Read-only view of the Ring of Kinship interface. Shows each filled slot's in-game colour and OCR'd name. Self-slot is auto-detected by matching OCR'd names against your own name (Settings \u2192 Your name)."></span>
-      </h2>
-      <ul id="slots-list"></ul>
-    </section>
-
     <section class="block history-block">
       <h2>
         Previous Floor Keys <span class="count" id="history-count">0</span>
         <button id="history-toggle" class="mini-btn" title="Show/hide the unlock-time breakdown for the floor you just finished">Show</button>
       </h2>
       <ul id="history-list" hidden></ul>
+    </section>
+
+    <section class="block slots-block">
+      <h2>
+        Party Slots <span class="count" id="slots-count">0</span>
+        <span class="slots-hint" id="slots-hint" title="Read-only view of the Ring of Kinship interface. Shows each filled slot's in-game colour and OCR'd name. Self-slot is auto-detected by matching OCR'd names against your own name (Settings \u2192 Your name)."></span>
+      </h2>
+      <ul id="slots-list"></ul>
     </section>
 
     <section class="block debug-block" id="debug-section">
