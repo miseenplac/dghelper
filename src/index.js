@@ -724,24 +724,31 @@ function formatClock(ts) {
   return `${hh}:${mm}`;
 }
 
-function formatMMSS(totalSeconds) {
-  const s = Math.max(0, Math.round(totalSeconds));
-  const m = Math.floor(s / 60);
-  const ss = s % 60;
-  return `${m}:${String(ss).padStart(2, '0')}`;
-}
-
-// Display-side formatter for an OCR'd floor timer ("HH:MM:SS"). Drops
-// the hours component when zero (almost always — most floors are < 1h)
-// so the cell renders as "MM:SS" for a tighter row. Floors that did
-// break an hour keep the full HH:MM:SS so duration isn't ambiguous.
-// Storage (f.time, CSV export, webhook payload) stays HH:MM:SS — this
-// only affects what the user SEES in the floor list.
+// Display-side formatter for an OCR'd floor timer ("HH:MM:SS"). Renders
+// in the most compact form for the duration: M:SS under 10 min, MM:SS
+// up to 1h, H:MM:SS up to 10h, HH:MM:SS beyond. Storage (f.time, CSV
+// export, webhook payload) stays HH:MM:SS — this only affects display.
 function formatFloorTime(t) {
   if (typeof t !== 'string' || !t) return '';
   const m = /^(\d+):(\d+):(\d+)$/.exec(t);
   if (!m) return t;
-  return parseInt(m[1], 10) === 0 ? `${m[2]}:${m[3]}` : t;
+  const hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  if (hh === 0) return `${mm}:${m[3]}`;
+  return `${hh}:${String(mm).padStart(2, '0')}:${m[3]}`;
+}
+
+// Avg-floor-time formatter — keeps tenth-second precision so the AVG pill
+// reads e.g. "7:52.5" rather than rounding to whole seconds. Math.round on
+// tenths first so 59.95s carries cleanly into the next minute.
+function formatAvgTime(totalSeconds) {
+  const tenths = Math.max(0, Math.round(totalSeconds * 10) / 10);
+  const h = Math.floor(tenths / 3600);
+  const m = Math.floor((tenths % 3600) / 60);
+  const sec = tenths - h * 3600 - m * 60;
+  const secStr = sec.toFixed(1).padStart(4, '0');
+  if (h === 0) return `${m}:${secStr}`;
+  return `${h}:${String(m).padStart(2, '0')}:${secStr}`;
 }
 
 function renderFloors(log) {
@@ -759,7 +766,7 @@ function renderFloors(log) {
     } else {
       const mean = window.reduce((a, f) => a + f.timeSeconds, 0) / window.length;
       floorsAvgEl.hidden = false;
-      floorsAvgEl.textContent = `avg ${formatMMSS(mean)}`;
+      floorsAvgEl.textContent = `avg ${formatAvgTime(mean)}`;
       floorsAvgEl.title = `mean of last ${window.length} floor(s) with recorded timers`
         + (window.length < FLOORS_AVG_WINDOW ? ` (fewer than ${FLOORS_AVG_WINDOW} available)` : '');
     }

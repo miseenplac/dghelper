@@ -40,11 +40,13 @@
       <h2>
         Floors <span class="count" id="floors-count">0</span>
         <span class="count avg-display" id="floors-avg" title="Average time of the most recent 11 floors with recorded timers" hidden></span>
+      </h2>
+      <ul id="floors-list" hidden></ul>
+      <div class="floors-actions">
         <button id="floors-toggle" class="mini-btn" title="Show/hide the floor list. Collapsed by default to save window space.">Show</button>
         <button id="floors-export" class="mini-btn" title="Copy the floor log to clipboard as CSV (startedAt, endedAt, time, timeSeconds). Falls back to debug log if clipboard is blocked.">Export CSV</button>
         <button id="floors-clear" class="mini-btn" title="Clear the entire floor log (persistent \u2014 removes from localStorage too). Click once to arm, click again within 3s to confirm.">Clear</button>
-      </h2>
-      <ul id="floors-list" hidden></ul>
+      </div>
     </section>
 
     <section class="block history-block">

@@ -6,7 +6,7 @@
   "iconUrl": "./icon.png",
   "defaultWidth": 320,
   "defaultHeight": 460,
-  "minWidth": 240,
+  "minWidth": 160,
   "maxWidth": 560,
   "permissions": "pixel,overlay"
 }

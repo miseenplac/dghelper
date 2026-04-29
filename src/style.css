@@ -46,19 +46,27 @@ nav.tabs {
   gap: 2px;
   margin: 0;
   padding: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
 }
 nav.tabs .tab-btn {
   background: #1f1f1f;
   color: #888;
   border: 1px solid #333;
   border-bottom: none;
-  padding: 4px 12px;
+  padding: 4px 6px;
   font-size: 11px;
   font-family: inherit;
   cursor: pointer;
   border-radius: 3px 3px 0 0;
   letter-spacing: 0.3px;
   margin-bottom: -1px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 nav.tabs .tab-btn:hover { background: #2a2a2a; color: #ccc; }
 nav.tabs .tab-btn.active {
@@ -409,6 +417,17 @@ footer {
   max-height: 240px;
   overflow-y: auto;
   padding-right: 2px;
+}
+
+/* Action buttons (Show/Hide, Export CSV, Clear) for the Floors block. Pulled
+   out of the section h2 so the heading row stays compact (FLOORS [count]
+   [avg pill]) and fits the plugin's minimum window width without wrapping.
+   The buttons keep their .mini-btn margin-left:auto, which right-aligns the
+   first child and the rest follow with the flex gap. */
+.floors-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
 }
 
 /* Average-time pill — amber tint to match the gold/brown Floors accent */
