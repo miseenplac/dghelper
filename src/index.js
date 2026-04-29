@@ -98,6 +98,11 @@ const DEFAULT_SETTINGS = {
   // back on later shows historical entries up to the 250-line cap.
   // Default true for backward compatibility with existing users.
   showDebugPanel: true,
+  // UI toggle: whether each floor row shows the wall-clock finish time
+  // (e.g., "finished 01:25") next to its duration. Off by default to
+  // keep rows compact; users who want to correlate session timestamps
+  // with their floor history can enable it.
+  showFloorFinishTime: false,
 };
 let settings = { ...DEFAULT_SETTINGS };
 function loadSettings() {
@@ -118,6 +123,9 @@ function loadSettings() {
       }
       if (typeof obj.showDebugPanel === 'boolean') {
         settings.showDebugPanel = obj.showDebugPanel;
+      }
+      if (typeof obj.showFloorFinishTime === 'boolean') {
+        settings.showFloorFinishTime = obj.showFloorFinishTime;
       }
     }
   } catch (_) {}
@@ -723,6 +731,19 @@ function formatMMSS(totalSeconds) {
   return `${m}:${String(ss).padStart(2, '0')}`;
 }
 
+// Display-side formatter for an OCR'd floor timer ("HH:MM:SS"). Drops
+// the hours component when zero (almost always — most floors are < 1h)
+// so the cell renders as "MM:SS" for a tighter row. Floors that did
+// break an hour keep the full HH:MM:SS so duration isn't ambiguous.
+// Storage (f.time, CSV export, webhook payload) stays HH:MM:SS — this
+// only affects what the user SEES in the floor list.
+function formatFloorTime(t) {
+  if (typeof t !== 'string' || !t) return '';
+  const m = /^(\d+):(\d+):(\d+)$/.exec(t);
+  if (!m) return t;
+  return parseInt(m[1], 10) === 0 ? `${m[2]}:${m[3]}` : t;
+}
+
 function renderFloors(log) {
   if (floorsCountEl) floorsCountEl.textContent = String(log.length);
   if (!floorsListEl) return;
@@ -738,7 +759,7 @@ function renderFloors(log) {
     } else {
       const mean = window.reduce((a, f) => a + f.timeSeconds, 0) / window.length;
       floorsAvgEl.hidden = false;
-      floorsAvgEl.textContent = `avg ${formatMMSS(mean)} · ${window.length} floor${window.length === 1 ? '' : 's'}`;
+      floorsAvgEl.textContent = `avg ${formatMMSS(mean)}`;
       floorsAvgEl.title = `mean of last ${window.length} floor(s) with recorded timers`
         + (window.length < FLOORS_AVG_WINDOW ? ` (fewer than ${FLOORS_AVG_WINDOW} available)` : '');
     }
@@ -756,18 +777,26 @@ function renderFloors(log) {
     const n = i + 1;
     const unended = !f.ended;
     const timeCell = f.time
-      ? `<span class="floor-time">${f.time}</span>`
+      ? `<span class="floor-time">${formatFloorTime(f.time)}</span>`
       : `<span class="floor-time missing">\u2014</span>`;
-    const whenCell = f.endedAt
-      ? `finished ${formatClock(f.endedAt)}`
-      : `started ${formatClock(f.startedAt)}`;
+    const showWhen = !!settings.showFloorFinishTime;
+    let whenHTML = '';
+    if (showWhen) {
+      const whenText = f.endedAt
+        ? `finished ${formatClock(f.endedAt)}`
+        : `started ${formatClock(f.startedAt)}`;
+      whenHTML = `<span class="floor-sep">\u00B7</span>` +
+        `<span class="floor-when">${whenText}</span>`;
+    }
+    const liClasses = ['floor-row'];
+    if (unended) liClasses.push('unended');
+    if (!showWhen) liClasses.push('no-when');
     parts.push(
-      `<li class="floor-row${unended ? ' unended' : ''}" data-started="${f.startedAt}">` +
+      `<li class="${liClasses.join(' ')}" data-started="${f.startedAt}">` +
         `<span class="floor-num">#${n}</span>` +
         `<span class="floor-sep">\u00B7</span>` +
         timeCell +
-        `<span class="floor-sep">\u00B7</span>` +
-        `<span class="floor-when">${whenCell}</span>` +
+        whenHTML +
         `<button class="floor-del" title="Delete this floor">\u00D7</button>` +
       `</li>`
     );
@@ -811,40 +840,85 @@ floor.onChange(renderFloors);
 renderFloors(floor.getAll());
 
 // ---- Tab nav -------------------------------------------------------------
-// Two top-level tabs: Tracker (full UI) and Floors (stream-friendly view —
-// hides everything except the floor log). Active choice persists across
-// reloads in localStorage. The Floors view reuses the existing #floors-list
-// render path; CSS rules on #app[data-active-tab="floors"] hide non-floor
-// blocks and force the list visible regardless of the Show/Hide toggle.
+// Four top-level tabs: Tracker (full UI), Floors (stream-friendly view —
+// hides everything except the floor log), Calibration (one-time setup of
+// scan regions + diagnostics tools), Settings (form/prefs pane). Active
+// choice persists in localStorage. CSS rules on #app[data-active-tab=...]
+// handle the show/hide layout per tab. setActiveTab also pokes
+// updateRokWarning so the banner re-evaluates on tab switch.
 
 const TAB_STORAGE_KEY = 'dkt:activeTab:v1';
-const tabTrackerBtn = document.getElementById('tab-tracker');
-const tabFloorsBtn  = document.getElementById('tab-floors');
-const appEl         = document.getElementById('app');
+const tabTrackerBtn      = document.getElementById('tab-tracker');
+const tabFloorsBtn       = document.getElementById('tab-floors');
+const tabCalibrationBtn  = document.getElementById('tab-calibration');
+const tabSettingsBtn     = document.getElementById('tab-settings');
+const appEl              = document.getElementById('app');
+
+const VALID_TABS = ['tracker', 'floors', 'calibration', 'settings'];
 
 function setActiveTab(name) {
-  const tab = (name === 'floors') ? 'floors' : 'tracker';
+  const tab = VALID_TABS.includes(name) ? name : 'tracker';
   if (appEl) appEl.dataset.activeTab = tab;
-  if (tabTrackerBtn) {
-    const active = (tab === 'tracker');
-    tabTrackerBtn.classList.toggle('active', active);
-    tabTrackerBtn.setAttribute('aria-selected', active ? 'true' : 'false');
-  }
-  if (tabFloorsBtn) {
-    const active = (tab === 'floors');
-    tabFloorsBtn.classList.toggle('active', active);
-    tabFloorsBtn.setAttribute('aria-selected', active ? 'true' : 'false');
-  }
+  const setBtnState = (btn, active) => {
+    if (!btn) return;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  };
+  setBtnState(tabTrackerBtn,     tab === 'tracker');
+  setBtnState(tabFloorsBtn,      tab === 'floors');
+  setBtnState(tabCalibrationBtn, tab === 'calibration');
+  setBtnState(tabSettingsBtn,    tab === 'settings');
   try { localStorage.setItem(TAB_STORAGE_KEY, tab); } catch (_) {}
+  // Banner visibility depends on which tab is active (only Tracker/Floors).
+  // updateRokWarning is a function declaration so it's hoisted, but its
+  // closure reads _lastPartyPanelDetectedAt (a let) declared further below.
+  // The IIFE that first calls setActiveTab is therefore placed AFTER the
+  // RoK warning block — calling earlier would TDZ-throw, halting module
+  // evaluation and leaving the let permanently uninitialized.
+  if (typeof updateRokWarning === 'function') updateRokWarning();
 }
 
-if (tabTrackerBtn) tabTrackerBtn.addEventListener('click', () => setActiveTab('tracker'));
-if (tabFloorsBtn)  tabFloorsBtn.addEventListener('click',  () => setActiveTab('floors'));
+if (tabTrackerBtn)     tabTrackerBtn.addEventListener('click',     () => setActiveTab('tracker'));
+if (tabFloorsBtn)      tabFloorsBtn.addEventListener('click',      () => setActiveTab('floors'));
+if (tabCalibrationBtn) tabCalibrationBtn.addEventListener('click', () => setActiveTab('calibration'));
+if (tabSettingsBtn)    tabSettingsBtn.addEventListener('click',    () => setActiveTab('settings'));
 
+// ---- RoK warning banner --------------------------------------------------
+// Shown on Tracker/Floors tabs when a floor is active AND the party panel
+// hasn't been confirmed-detected in the last ROK_WARN_STALE_MS. Hidden
+// otherwise. Updated on each tick (cheap DOM read/write) + on tab switch
+// via setActiveTab so swap-to-tracker reveals/hides immediately.
+//
+// _lastPartyPanelDetectedAt is set inside runPartyPanelRead at the moment
+// of confirmed detection (post temporal-confirmation gate). The party-panel
+// scan itself is gated to active-floor only — outside dungeons we don't
+// burn CPU on RoK reads, so this timestamp goes stale naturally between
+// floors and the warning fires at next floor-start until first detection.
+
+const ROK_WARN_STALE_MS = 5000;
+let _lastPartyPanelDetectedAt = 0;
+
+function updateRokWarning() {
+  const banner = document.getElementById('rok-warning');
+  if (!banner) return;
+  const cur = floor.current();
+  const isFloorActive = !!cur && !cur.ended;
+  const panelStale = (Date.now() - _lastPartyPanelDetectedAt) > ROK_WARN_STALE_MS;
+  const onShownTab = appEl &&
+    (appEl.dataset.activeTab === 'tracker' || appEl.dataset.activeTab === 'floors');
+  banner.hidden = !(isFloorActive && panelStale && onShownTab);
+}
+
+// ---- Initial active-tab load --------------------------------------------
+// Deliberately placed AFTER the RoK warning block above. The first
+// setActiveTab call cascades into updateRokWarning, which reads
+// _lastPartyPanelDetectedAt — that let must already be initialized by
+// the time this IIFE runs. Earlier placement caused a TDZ throw that
+// halted module evaluation and broke every subsequent tab click.
 (function loadActiveTab() {
   let stored = null;
   try { stored = localStorage.getItem(TAB_STORAGE_KEY); } catch (_) {}
-  setActiveTab(stored === 'floors' ? 'floors' : 'tracker');
+  setActiveTab(VALID_TABS.includes(stored) ? stored : 'tracker');
 })();
 
 // ---- Calibration UI ------------------------------------------------------
@@ -1173,46 +1247,16 @@ if (calBtnChat) {
 }
 
 // ---- Settings UI ---------------------------------------------------------
-// Everything settings / calibration-related lives in a MODAL opened by
-// the Settings button in the header. Closed via the Done button inside
-// the modal, a backdrop click, or the Escape key. The modal houses
-// infrequently-touched config (name, prefs, calibration) so the main
-// window stays focused on runtime state the user actually cares about
-// during dungeon runs (doors, keys, floors, party slots).
-const settingsModal     = document.getElementById('settings-modal');
-const settingsBackdrop  = document.getElementById('settings-modal-backdrop');
-const settingsDoneBtn   = document.getElementById('settings-done');
+// Settings + calibration + diagnostics live in their own tab pane (no
+// longer a modal). Form-element refs below are still wired the same way
+// further down the file; the section is just inline rather than overlay.
+// Active-tab toggling is handled by the Tab nav block above.
 const maxFloorsInput    = document.getElementById('settings-max-floors');
-const settingsHeaderBtn = document.getElementById('settings-btn');
 const settingsNameInput = document.getElementById('settings-name');
-const showDebugInput    = document.getElementById('settings-show-debug');
-const clearTeammatesBtn = document.getElementById('settings-clear-teammates');
-const debugSection      = document.getElementById('debug-section');
-
-function openSettingsModal() {
-  if (settingsModal) settingsModal.hidden = false;
-}
-function closeSettingsModal() {
-  if (settingsModal) settingsModal.hidden = true;
-}
-
-if (settingsHeaderBtn) {
-  settingsHeaderBtn.addEventListener('click', openSettingsModal);
-}
-if (settingsDoneBtn) {
-  settingsDoneBtn.addEventListener('click', closeSettingsModal);
-}
-if (settingsBackdrop) {
-  // Click on the dimmed backdrop (outside the modal panel) dismisses.
-  settingsBackdrop.addEventListener('click', closeSettingsModal);
-}
-// Escape key — global listener, only acts when the modal is open so
-// we don't intercept keystrokes otherwise.
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && settingsModal && !settingsModal.hidden) {
-    closeSettingsModal();
-  }
-});
+const showDebugInput      = document.getElementById('settings-show-debug');
+const showFinishTimeInput = document.getElementById('settings-show-finish-time');
+const clearTeammatesBtn   = document.getElementById('settings-clear-teammates');
+const debugSection        = document.getElementById('debug-section');
 
 // "Your name" input — edits partyRoster[0] only. Teammates at
 // partyRoster[1+] are preserved (auto-discovered via RoK OCR). When
@@ -1258,6 +1302,20 @@ if (showDebugInput && debugSection) {
     settings.showDebugPanel = enabled;
     saveSettings();
     debugSection.hidden = !enabled;
+  });
+}
+
+// "Show finish time" — when on, each floor row gets an extra "finished
+// 01:25" cell next to its duration. Off by default for compact rows.
+// Re-renders the floor list immediately so the visibility flips on toggle.
+if (showFinishTimeInput) {
+  showFinishTimeInput.checked = !!settings.showFloorFinishTime;
+  showFinishTimeInput.addEventListener('change', () => {
+    const enabled = !!showFinishTimeInput.checked;
+    if (enabled === settings.showFloorFinishTime) return;
+    settings.showFloorFinishTime = enabled;
+    saveSettings();
+    renderFloors(floor.getAll());
   });
 }
 
@@ -2091,6 +2149,13 @@ let _partySize = 'UNKNOWN';
 
 function runPartyPanelRead() {
   if (!window.alt1 || !alt1.permissionPixel) return;
+  // Gate scanning to active-floor only — outside dungeons we don't burn
+  // CPU on RoK reads. nextPartyTick deliberately not advanced here, so
+  // the next read fires immediately once a floor starts. _lastPartyPanel-
+  // DetectedAt naturally goes stale between floors → banner re-fires at
+  // floor-start until the panel is confirmed-detected again.
+  const cur = floor.current();
+  if (!cur || cur.ended) return;
   if (tickCount < nextPartyTick) return;
   nextPartyTick = tickCount + PARTY_INTERVAL_TICKS;
 
@@ -2218,6 +2283,11 @@ function runPartyPanelRead() {
   // Confirmed — two consecutive matching detections. Update provisional
   // to the current (so subsequent ticks continue to confirm against it).
   _provisionalPanel = currentKey;
+
+  // Mark the moment of confirmed panel detection — drives the RoK warning
+  // banner (Tracker/Floors tabs). Updated only on confirmed detection (not
+  // provisional) so a one-tick fluke doesn't dismiss the warning.
+  _lastPartyPanelDetectedAt = Date.now();
 
   // Cache + render on every successful (confirmed) read. Debug logging
   // is still state-change-deduped below.
@@ -3088,6 +3158,10 @@ function tick() {
   // solo mode. Tracker holds the pin until the matching key is used,
   // so overlay follows the tracker's state automatically.
   drawPinnedOverlays();
+
+  // RoK warning banner — re-evaluates floor-active + panel-staleness on
+  // every tick. Cheap (DOM read/write only).
+  updateRokWarning();
 }
 
 // Refresh the overlay's frozen origin/pitch anchor only when new map

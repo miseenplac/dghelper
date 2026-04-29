@@ -1,12 +1,14 @@
 # DungKey Tracker — debug-phase hand-off
 
-Context for whoever is picking this up after 2026-04-24. Read this plus `MEMORY.md` in the user's home dir before touching code.
+Context for whoever is picking this up after 2026-04-29. Read this plus `MEMORY.md` in the user's home dir before touching code.
 
 ---
 
 ## What this is
 
 An Alt1 Toolkit plugin for RS3 Dungeoneering. Watches the chatbox for key/door events, tracks state, renders key icons as an Alt1 overlay on the in-game DG map widget at the cell where each door was info'd. Works in solo AND multi-party.
+
+**UI is organised into 4 tabs** in the plugin window: Tracker (full UI), Floors (stream-friendly view of floor times only), Calibration (one-time setup of scan regions + diagnostics), Settings (form/prefs). A dynamic red banner on Tracker/Floors prompts the user to open the Ring of Kinship when a floor is active and the party panel hasn't been detected for ≥ 5 s. See `project_dungkey_ui_tabs.md` in memory for the full tab-system rundown.
 
 **Shipped and live** at `https://dungkey.netlify.app`. Private GitHub repo `miseenplac/dungkey-tracker`. Netlify auto-rebuilds on `git push origin main`.
 
@@ -34,7 +36,7 @@ After code changes that need shipping:
 
 ```
 src/
-├── index.js       entry — 100ms tick loop, chat dispatch, self-pin cascade, overlay draws, all UI wiring, settings modal
+├── index.js       entry — 100ms tick loop, chat dispatch, self-pin cascade, overlay draws, all UI wiring, tab nav, RoK banner, settings form bindings
 ├── parser.js      chat-line parsing, fuzzy canonical snap, signature computation
 ├── tracker.js     state machine: doorsPending / keysFound / keyHistory. first-info-wins on pin location
 ├── floor.js       floor log persistence (dkt:floors:v1)
@@ -44,8 +46,8 @@ src/
 ├── keyIcon.js     SVG icons — filled body + chartreuse backdrop/halo for ready state
 ├── overlay.js     icon pre-render → BGRA-base64 → alt1.overLayImage
 ├── ui.js          DOM rendering for Doors list, Party Slots, Previous Floor Keys, etc.
-├── index.html     UI layout. Settings modal at bottom, opened via header button.
-└── style.css      all styling. Modal styles at the bottom.
+├── index.html     UI layout. 4 tab buttons in <header>, then RoK warning banner, then per-tab .block sections. Settings is now an inline pane (not a modal).
+└── style.css      all styling. Tab visibility via #app[data-active-tab="..."] selectors. Modal-* class names retained on the settings pane wrapper for legacy CSS scoping.
 ```
 
 ## Debug log channels (dbg kind)
@@ -116,12 +118,18 @@ Do not violate these without understanding why they exist:
 8. **Chat username OCR is unreliable on this user's client** — their own name garbles to "Aar i" (with clan-icon placeholder), OCR drops it entirely on some lines. Fuzzy roster match + aliasMap signature binding handle attribution. Teammate OCR is more reliable.
 9. **Alt1 `appconfig.json` permissions must be comma-STRING**, not array. Array fails silently. See `reference_alt1_plugin_publishing.md` in memory.
 10. **Webpack bundle is content-hashed.** Anyone editing `index.html` inline won't propagate — edit `src/index.html` + rebuild.
+11. **Tab nav `loadActiveTab` IIFE must run AFTER the RoK warning block.** `setActiveTab` calls `updateRokWarning()` which reads `_lastPartyPanelDetectedAt` (a `let` declared in the RoK block). Earlier placement caused a TDZ throw at startup that halted module evaluation, leaving the let permanently uninitialized — every subsequent tab click then re-threw the same error. See `project_dungkey_ui_tabs.md` in memory.
+12. **Party panel scan is gated to active-floor only.** `runPartyPanelRead()` early-returns if `floor.current()` is null or `ended === true`. Outside dungeons, no panel scanning happens (CPU saving, user-requested). `nextPartyTick` is NOT advanced during the gated period, so the next read fires on the first tick after a floor starts. Side effect: party slots in Tracker tab don't update outside an active floor.
+13. **RoK warning banner timestamp is set on CONFIRMED detection only.** `_lastPartyPanelDetectedAt = Date.now()` is set inside `runPartyPanelRead` AFTER the temporal-confirmation gate (two consecutive matching detections). Provisional / one-tick flukes don't dismiss the warning.
+14. **`formatFloorTime(t)` is display-only.** It drops `HH:` from `HH:MM:SS` when hours == 0 (so e.g. "00:07:45" → "07:45"). Storage (`f.time`, CSV export, webhook payload) stays HH:MM:SS — only the floor-list cell uses the trimmed form.
 
 ## Known open issues (low priority)
 
 1. **Sticky teammate-unlocked door** — sometimes a door that a teammate unlocked doesn't clear from the tracker. Likely chat OCR fidelity on `"Your party used a key: X Y key"` broadcasts. If user reports this, ask for the raw OCR + MATCH line at the moment of the unlock. Fix path: palette tuning for broadcast-body colour, or canonical-snap threshold relaxation for that pattern.
 2. **Stale comments** in `parser.js` and `tracker.js` mentioning removed `slotAssignMap`. Not load-bearing, pure cleanup.
 3. **Overlay dump diagnostic** in `drawPinnedOverlays` still emits on state change. Can be removed after another few sessions with no bugs.
+4. **Narrow-window tab handling is unsolved.** At plugin window widths where the four tab labels can't all fit, the rightmost tab(s) go off-screen. A pass at CSS ellipsis truncation + chevron overflow arrows was attempted on 2026-04-29 and rolled back — broke all CSS in the user's environment for unclear reasons. Current behaviour: tabs stay full-text; user must widen the window if they need to reach a cut-off tab. Re-attempting requires debugging in-environment with dev tools open (Network/Console). See the "Failed attempt" section in `project_dungkey_ui_tabs.md`.
+5. **Modal-* class names persist on the settings pane wrapper.** `.modal-body` / `.modal-subtitle` / `.modal-body .cal-row` are still used on the inline settings + calibration sections (the modal scaffolding was removed in 2026-04-29 but the CSS class names were kept to avoid HTML/CSS churn). Pure naming debt; functional. Rename if doing a CSS pass.
 
 ## Memory system
 

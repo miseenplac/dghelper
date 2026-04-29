@@ -18,16 +18,10 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
-  padding-bottom: 6px;
+  padding-bottom: 0;
   border-bottom: 1px solid #333;
-}
-
-header h1 {
-  font-size: 13px;
-  margin: 0;
-  color: #f5c842;
-  letter-spacing: 0.3px;
 }
 
 .header-actions { display: flex; gap: 4px; }
@@ -43,15 +37,15 @@ header h1 {
 }
 .header-actions button:hover { background: #3a3a3a; }
 
-/* Top-level tab nav. Two tabs: Tracker (full UI) and Floors (stream view).
-   Active state echoes the header's brand gold so it reads as a clear
-   selection without competing with the existing block accents. */
+/* Top-level tab nav. Lives inside <header> — the header's bottom border
+   doubles as the tab-strip baseline. Active state echoes the header's
+   brand gold so it reads as a clear selection without competing with
+   the existing block accents. */
 nav.tabs {
   display: flex;
   gap: 2px;
-  margin: 0 0 8px 0;
+  margin: 0;
   padding: 0;
-  border-bottom: 1px solid #333;
 }
 nav.tabs .tab-btn {
   background: #1f1f1f;
@@ -82,9 +76,32 @@ nav.tabs .tab-btn.active {
 #app[data-active-tab="floors"] #floors-toggle { display: none; }
 #app[data-active-tab="floors"] #floors-list { display: block !important; }
 
-/* Tracker tab hides the floors block — the floor log lives entirely in the
-   Floors tab now (avoids duplicate display + competing Show/Hide state). */
-#app[data-active-tab="tracker"] .floors-block { display: none; }
+/* Tracker tab hides the per-tab blocks (floors / calibration / settings) —
+   each lives in its own dedicated tab. Each non-tracker tab shows only
+   its own block; footer hidden on those tabs too. */
+#app[data-active-tab="tracker"] .floors-block,
+#app[data-active-tab="tracker"] .calibration-block,
+#app[data-active-tab="tracker"] .settings-block { display: none; }
+
+#app[data-active-tab="calibration"] .block:not(.calibration-block) { display: none; }
+#app[data-active-tab="calibration"] footer { display: none; }
+
+#app[data-active-tab="settings"] .block:not(.settings-block) { display: none; }
+#app[data-active-tab="settings"] footer { display: none; }
+
+/* RoK warning banner — shown on Tracker/Floors tabs when a floor is
+   active and the party panel hasn't been detected for 5+ seconds. JS
+   toggles the [hidden] attribute based on tab + floor + panel state. */
+.rok-warning {
+  padding: 5px 7px;
+  margin-bottom: 8px;
+  background: #3d1b1b;
+  border-left: 3px solid #e63946;
+  color: #f0c8c8;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.rok-warning[hidden] { display: none; }
 
 #status {
   padding: 5px 7px;
@@ -340,8 +357,14 @@ footer {
   background: #1f1c14;
   border-left: 3px solid #c9a86a;
   border-radius: 3px;
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+/* When the finish-time cell is hidden (settings.showFloorFinishTime off),
+   push the × delete button to the right edge so the row's right side
+   stays anchored even without the .floor-when spacer. */
+#floors-list li.floor-row.no-when .floor-del {
+  margin-left: auto;
 }
 #floors-list li.floor-row.unended {
   background: #2a1f12;
@@ -796,65 +819,10 @@ footer {
 #debug-list li.dbg-info   { color: #6aa9d8; }
 #debug-list li.dbg-raw    { color: #ccc; }
 
-/* Settings + Calibration modal — opened via header Settings button.
- * Full-viewport overlay with semi-transparent backdrop and a centred
- * content panel. Scrolls internally when content overflows; capped at
- * 80vh so it never runs past the plugin window on short resolutions. */
-.modal {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-}
-.modal[hidden] { display: none; }
-
-.modal-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-}
-
-.modal-panel {
-  position: relative;
-  width: 100%;
-  max-width: 440px;
-  max-height: 80vh;
-  overflow-y: auto;
-  background: #1a1a1a;
-  border: 1px solid #444;
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid #333;
-  padding-bottom: 8px;
-}
-
-.modal-header h2 {
-  margin: 0;
-  font-size: 13px;
-  color: #f5c842;
-  letter-spacing: 0.3px;
-  text-transform: none;
-}
-
-.modal-header .mini-btn {
-  margin-left: 0;
-  padding: 3px 12px;
-  font-size: 10.5px;
-}
-
+/* Settings tab pane — formerly a modal, now an inline section that's
+ * shown only when data-active-tab="settings". Class names below kept as
+ * .modal-body / .modal-subtitle to avoid churning the HTML; they're
+ * structurally just "settings rows / settings sub-headers" now. */
 .modal-body {
   display: flex;
   flex-direction: column;
@@ -874,8 +842,8 @@ footer {
   gap: 6px;
 }
 
-/* Inside the modal, cal-rows + setting-rows get a bit more breathing
- * room than when they lived in the main layout's dense stacking. */
+/* Cal-rows + setting-rows get a bit more breathing room than the dense
+ * runtime-state blocks they sit alongside. */
 .modal-body .cal-row {
   padding: 5px 0;
 }

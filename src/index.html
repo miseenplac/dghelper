@@ -5,24 +5,25 @@
   <title>DungKey Tracker</title>
 </head>
 <body>
-  <div id="app">
+  <div id="app" data-active-tab="tracker">
     <header>
-      <h1>DungKey Tracker</h1>
-      <div class="header-actions">
-        <button id="reset-btn" title="Clear tracked keys &amp; doors">Reset</button>
-        <button id="settings-btn" title="Open the settings + calibration panel">Settings</button>
-      </div>
+      <nav class="tabs" role="tablist">
+        <button class="tab-btn active" id="tab-tracker" role="tab" aria-selected="true" title="Full tracker view (doors, keys, slots, debug).">Tracker</button>
+        <button class="tab-btn" id="tab-floors" role="tab" aria-selected="false" title="Stream-friendly view: only the floor log, always expanded.">Floors</button>
+        <button class="tab-btn" id="tab-calibration" role="tab" aria-selected="false" title="One-time calibration of scan regions (Party, DG Map, Chat, Winterface) plus diagnostics tools.">Calibration</button>
+        <button class="tab-btn" id="tab-settings" role="tab" aria-selected="false" title="Plugin configuration: name, prefs, webhook.">Settings</button>
+      </nav>
     </header>
 
-    <nav class="tabs" role="tablist">
-      <button class="tab-btn active" id="tab-tracker" role="tab" aria-selected="true" title="Full tracker view (doors, keys, slots, floors, debug).">Tracker</button>
-      <button class="tab-btn" id="tab-floors" role="tab" aria-selected="false" title="Stream-friendly view: only the floor log, always expanded.">Floors</button>
-    </nav>
+    <div id="rok-warning" class="rok-warning" hidden>Party interface not detected. Click your ring of kinship inside an active floor for the map overlay to work</div>
 
     <div id="status"></div>
 
     <section class="block">
-      <h2>Doors <span class="count" id="doors-count">0</span></h2>
+      <h2>
+        Doors <span class="count" id="doors-count">0</span>
+        <button id="reset-btn" class="mini-btn" title="Clear tracked keys &amp; doors — wipes the Doors and Unmatched Keys lists. Floors and party slots are unaffected.">Reset</button>
+      </h2>
       <ul id="doors-list"></ul>
     </section>
 
@@ -72,18 +73,51 @@
       <ul id="debug-list" hidden></ul>
     </section>
 
-    <!-- Settings + Calibration + Diagnostics modal. Everything the user
-         sets up once (or uses rarely) lives here so the main window
-         stays focused on runtime state. Closed via Done / backdrop
-         click / Escape. -->
-    <div id="settings-modal" class="modal" hidden>
-      <div class="modal-backdrop" id="settings-modal-backdrop"></div>
-      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
-        <div class="modal-header">
-          <h2 id="settings-modal-title">Settings</h2>
-          <button id="settings-done" class="mini-btn" title="Close the settings panel">Done</button>
-        </div>
-        <div class="modal-body">
+    <!-- Calibration tab pane. Visible only when data-active-tab="calibration".
+         Order: Party (RoK) first since it's the most setup-blocking step,
+         then DG Map, Chat, Winterface (rarely re-touched after first run).
+         Diagnostics tools (Eyedrop + Run layout test) at the bottom under
+         the same subtitle — no separate Diagnostics heading. -->
+    <section class="block calibration-block">
+      <div class="modal-body">
+          <div class="modal-subtitle">Calibration <span class="cal-hint" title="Calibrate each scan target once so the plugin knows exactly where to look. For Winterface, open the end-of-floor dialog in-game THEN click Calibrate. For Ring of Kinship and DG Map, the plugin will prompt you to hover the top-left and bottom-right corners. ✓ = calibrated. ⚠ = not set."></span></div>
+          <div id="calibration-panel">
+            <div class="cal-row" id="cal-row-party">
+              <span class="cal-label">Ring of Kinship</span>
+              <span class="cal-status" id="cal-status-party">⚠ not calibrated</span>
+              <button class="cal-btn" id="cal-btn-party" title="Define the scan region for the Ring of Kinship party interface. You'll hover TL then BR corners over 3s each.">Calibrate</button>
+              <button class="cal-btn cal-clear" id="cal-clear-party" title="Clear saved calibration for this metric.">Clear</button>
+            </div>
+            <div class="cal-row" id="cal-row-dgmap">
+              <span class="cal-label">DG Map</span>
+              <span class="cal-status" id="cal-status-dgmap">⚠ not calibrated</span>
+              <button class="cal-btn" id="cal-btn-dgmap" title="Define the scan region for the DG map widget. You'll hover TL then BR corners over 3s each.">Calibrate</button>
+              <button class="cal-btn cal-clear" id="cal-clear-dgmap" title="Clear saved calibration for this metric.">Clear</button>
+            </div>
+            <div class="cal-row" id="cal-row-chat">
+              <span class="cal-label">Chat</span>
+              <span class="cal-status" id="cal-status-chat">⚠ not located</span>
+              <button class="cal-btn" id="cal-btn-chat" title="Re-find the chatbox on screen. Useful if you moved it or it wasn't located on plugin start.">Refind</button>
+            </div>
+            <div class="cal-row" id="cal-row-winterface">
+              <span class="cal-label">Winterface</span>
+              <span class="cal-status" id="cal-status-winterface">⚠ not calibrated</span>
+              <button class="cal-btn" id="cal-btn-winterface" title="Open the end-of-floor winterface dialog in-game, then click this button. The plugin captures the dialog's position and uses it as the anchor for future timer OCR.">Calibrate</button>
+              <button class="cal-btn cal-clear" id="cal-clear-winterface" title="Clear saved winterface calibration. Plugin will fall back to full-screen dynamic detection.">Clear</button>
+            </div>
+          </div>
+          <div class="diagnostics-row">
+            <button id="eyedrop-btn" class="mini-btn" title="Click, then hover your mouse over a pixel (e.g. the 'B' of 'Blue wedge key' in chat). After 3s, the RGB is logged in the debug panel.">Eyedrop</button>
+            <button id="calibrate-btn" class="mini-btn" title="Run a layout check. For best results, open the end-dungeon winterface first so every step can be validated. Results + suggested fixes are dumped to the debug panel.">Run layout test</button>
+          </div>
+      </div>
+    </section>
+
+    <!-- Settings tab pane. Visible only when data-active-tab="settings".
+         Inner div keeps the .modal-body class so the existing padding +
+         .cal-row scoping CSS rules continue to apply unchanged. -->
+    <section class="block settings-block">
+      <div class="modal-body">
           <label class="setting-row">
             <span class="setting-label">Your name</span>
             <input type="text" id="settings-name" placeholder="Your in-game name (e.g. Aari the Iceborn)"
@@ -96,6 +130,13 @@
             <input type="number" id="settings-max-floors" min="10" max="100" step="1" value="100">
             <small class="setting-hint">When the log exceeds this, the oldest floor is auto-dropped. Hard cap 100; Dungeoneering has only 60 floors so 100 comfortably covers any single session.</small>
           </label>
+          <div class="setting-row">
+            <label class="setting-check">
+              <input type="checkbox" id="settings-show-finish-time">
+              <span class="setting-label">Show finish time</span>
+            </label>
+            <small class="setting-hint">Display the wall-clock time each floor ended next to its duration (e.g., "finished 01:25"). Off by default to keep rows compact.</small>
+          </div>
           <div class="setting-row">
             <label class="setting-check">
               <input type="checkbox" id="settings-timestamped-chat">
@@ -119,42 +160,8 @@
             <button id="settings-clear-teammates" class="mini-btn" title="Wipes the auto-discovered teammate list from your roster, keeping only your own name. Next RoK panel read re-populates from whatever party you're currently in.">Clear known teammates</button>
             <small class="setting-hint">Keeps your name but wipes auto-discovered teammates. Next RoK panel read re-populates from the current party.</small>
           </div>
-
-          <div class="modal-subtitle">Calibration <span class="cal-hint" title="Calibrate each scan target once so the plugin knows exactly where to look. For Winterface, open the end-of-floor dialog in-game THEN click Calibrate. For Ring of Kinship and DG Map, the plugin will prompt you to hover the top-left and bottom-right corners. \u2713 = calibrated. \u26A0 = not set."></span></div>
-          <div id="calibration-panel">
-            <div class="cal-row" id="cal-row-winterface">
-              <span class="cal-label">Winterface</span>
-              <span class="cal-status" id="cal-status-winterface">\u26A0 not calibrated</span>
-              <button class="cal-btn" id="cal-btn-winterface" title="Open the end-of-floor winterface dialog in-game, then click this button. The plugin captures the dialog's position and uses it as the anchor for future timer OCR.">Calibrate</button>
-              <button class="cal-btn cal-clear" id="cal-clear-winterface" title="Clear saved winterface calibration. Plugin will fall back to full-screen dynamic detection.">Clear</button>
-            </div>
-            <div class="cal-row" id="cal-row-chat">
-              <span class="cal-label">Chat</span>
-              <span class="cal-status" id="cal-status-chat">\u26A0 not located</span>
-              <button class="cal-btn" id="cal-btn-chat" title="Re-find the chatbox on screen. Useful if you moved it or it wasn't located on plugin start.">Refind</button>
-            </div>
-            <div class="cal-row" id="cal-row-party">
-              <span class="cal-label">Ring of Kinship</span>
-              <span class="cal-status" id="cal-status-party">\u26A0 not calibrated</span>
-              <button class="cal-btn" id="cal-btn-party" title="Define the scan region for the Ring of Kinship party interface. You'll hover TL then BR corners over 3s each.">Calibrate</button>
-              <button class="cal-btn cal-clear" id="cal-clear-party" title="Clear saved calibration for this metric.">Clear</button>
-            </div>
-            <div class="cal-row" id="cal-row-dgmap">
-              <span class="cal-label">DG Map</span>
-              <span class="cal-status" id="cal-status-dgmap">\u26A0 not calibrated</span>
-              <button class="cal-btn" id="cal-btn-dgmap" title="Define the scan region for the DG map widget. You'll hover TL then BR corners over 3s each.">Calibrate</button>
-              <button class="cal-btn cal-clear" id="cal-clear-dgmap" title="Clear saved calibration for this metric.">Clear</button>
-            </div>
-          </div>
-
-          <div class="modal-subtitle">Diagnostics</div>
-          <div class="diagnostics-row">
-            <button id="eyedrop-btn" class="mini-btn" title="Click, then hover your mouse over a pixel (e.g. the 'B' of 'Blue wedge key' in chat). After 3s, the RGB is logged in the debug panel.">Eyedrop</button>
-            <button id="calibrate-btn" class="mini-btn" title="Run a layout check. For best results, open the end-dungeon winterface first so every step can be validated. Results + suggested fixes are dumped to the debug panel.">Run layout test</button>
-          </div>
-        </div>
       </div>
-    </div>
+    </section>
   </div>
 </body>
 </html>
