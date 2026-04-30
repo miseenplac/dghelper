@@ -19,6 +19,7 @@ An Alt1 Toolkit plugin for RS3 Dungeoneering. Watches the chatbox for key/door e
 3. **Trust the user's bug reports.** Don't hypothesize user error. Investigate code/data directly. Ask for specific data (logs, eyedrops, screenshots) rather than "did you do X earlier?".
 4. **Palette widenings must be eyedrop-driven.** The user has an Eyedrop button in Settings → Diagnostics. Never widen an RGB range without sampled evidence.
 5. **No emojis in files unless asked.** User is terse; match the tone.
+6. **Evaluate CPU impact on every change.** Before shipping, answer: does this load the CPU more, less, or unchanged? Include a brief CPU note in commit messages and (when relevant) Phase Outcome sections — e.g. `CPU: net reduction — skips OCR every tick during calibration` / `CPU: neutral — cosmetic reorder` / `CPU: slight increase (~+1 DOM write/s), justified by [reason]`. The plugin runs on slow CPUs in production; reducing CPU load is a project-level vision, not just one project's goal. See `OPTIMIZATION.md` for the deeper context.
 
 ## Build / dev / reload cycle
 
