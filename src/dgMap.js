@@ -279,12 +279,17 @@ const CELL_SCAN_STEP = 2;
  * triangles on a boss room get attributed correctly (each triangle's
  * peak pixels pull it out of the red-family ambiguity with the boss).
  */
-export function classifyCellContents(screenData, cellCenterX, cellCenterY, pitch) {
+export function classifyCellContents(screenData, cellCenterX, cellCenterY, pitch, x0, y0) {
+  // (cellCenterX, cellCenterY) are absolute screen coords. Phase 7 regional
+  // bind: screenData spans [x0..x0+screenData.width) × [y0..y0+screenData.
+  // height) in absolute coords, so clamp absolute bounds and translate at
+  // every getPixel call. Full-RS bind / external callers passing screen.x=
+  // screen.y=0 produce identity translation, behaviour unchanged.
   const half = Math.floor(pitch / 2);
-  const xMin = Math.max(0, cellCenterX - half);
-  const xMax = Math.min(screenData.width - 1, cellCenterX + half);
-  const yMin = Math.max(0, cellCenterY - half);
-  const yMax = Math.min(screenData.height - 1, cellCenterY + half);
+  const xMin = Math.max(x0, cellCenterX - half);
+  const xMax = Math.min(x0 + screenData.width - 1, cellCenterX + half);
+  const yMin = Math.max(y0, cellCenterY - half);
+  const yMax = Math.min(y0 + screenData.height - 1, cellCenterY + half);
 
   const counts = {
     opened: 0, q: 0, ladder: 0, qglyph: 0, boss: 0,
@@ -308,14 +313,17 @@ export function classifyCellContents(screenData, cellCenterX, cellCenterY, pitch
 
   for (let y = yMin; y <= yMax; y += CELL_SCAN_STEP) {
     for (let x = xMin; x <= xMax; x += CELL_SCAN_STEP) {
-      const px = screenData.getPixel(x, y);
+      const px = screenData.getPixel(x - x0, y - y0);
       if (!px) continue;
       counts.total++;
       const r = px[0], g = px[1], b = px[2];
 
       // Triangle pixels take precedence — they render ON TOP of fills
       // and boss icon. Classify first; continue to next pixel on hit so
-      // each pixel counts in at most one bucket.
+      // each pixel counts in at most one bucket. Centroid sums accumulate
+      // ABSOLUTE coords (loop variables x/y are absolute) so triangle
+      // centroids returned in triangleCentroids stay in absolute screen
+      // space — output contract unchanged for regional/full-RS bind.
       const tri = classifyTrianglePixel(r, g, b);
       if (tri) {
         counts[tri]++;
@@ -384,7 +392,8 @@ export function classifyCellContents(screenData, cellCenterX, cellCenterY, pitch
  *
  * Returns: { [colRowKey]: { col, row, ...classifyCellContents result } }
  */
-export function classifyAllCells(screenData, origin, pitch, range = 7, region = null) {
+export function classifyAllCells(screenData, origin, pitch, range, region, x0, y0) {
+  if (range === undefined) range = 7;
   const cells = {};
   const half = Math.floor(pitch / 2);
   // Region clamp (optional). When a calibrated region is provided,
@@ -392,23 +401,28 @@ export function classifyAllCells(screenData, origin, pitch, range = 7, region = 
   // pixels outside the calibrated map box from producing false cell
   // classifications. The ±range scan window can easily extend past
   // the 8×8 widget when origin sits near the widget edge.
-  const rx0 = region ? Math.max(0, Math.floor(region.x)) : 0;
-  const ry0 = region ? Math.max(0, Math.floor(region.y)) : 0;
+  // Bounds reasoned in ABSOLUTE coords; full-RS bind keeps prior
+  // behaviour because x0=y0=0 collapses all the offset terms to zero.
+  const rx0 = region ? Math.max(x0, Math.floor(region.x)) : x0;
+  const ry0 = region ? Math.max(y0, Math.floor(region.y)) : y0;
   const rx1 = region
-    ? Math.min(screenData.width  - 1, rx0 + Math.floor(region.w))
-    : screenData.width  - 1;
+    ? Math.min(x0 + screenData.width  - 1, rx0 + Math.floor(region.w))
+    : x0 + screenData.width  - 1;
   const ry1 = region
-    ? Math.min(screenData.height - 1, ry0 + Math.floor(region.h))
-    : screenData.height - 1;
+    ? Math.min(y0 + screenData.height - 1, ry0 + Math.floor(region.h))
+    : y0 + screenData.height - 1;
   for (let row = -range; row <= range; row++) {
     for (let col = -range; col <= range; col++) {
       const cx = origin.x + col * pitch + half;
       const cy = origin.y + row * pitch + half;
       if (cx < rx0 + half || cy < ry0 + half) continue;
       if (cx > rx1 - half || cy > ry1 - half) continue;
-      if (cx < half || cy < half) continue;
-      if (cx >= screenData.width - half || cy >= screenData.height - half) continue;
-      const cell = classifyCellContents(screenData, cx, cy, pitch);
+      // Bind-buffer fitness: cell scan needs a `half`-margin to all
+      // sides (classifyCellContents reads ±half around the centre).
+      // Same absolute-coord clamping as the region check above.
+      if (cx < x0 + half || cy < y0 + half) continue;
+      if (cx >= x0 + screenData.width - half || cy >= y0 + screenData.height - half) continue;
+      const cell = classifyCellContents(screenData, cx, cy, pitch, x0, y0);
       // Only include cells with actual map-widget content (opened or q).
       // By game mechanics, triangles and boss/ladder/qglyph icons ONLY
       // render on cells with beige fill — they can't appear on unexplored
@@ -430,9 +444,17 @@ export function classifyAllCells(screenData, origin, pitch, range = 7, region = 
 // computes it from last-known origin/pitch.
 
 function defaultLeftRegion(screen) {
+  // Absolute-coord rect. Full-RS bind: screen.x/y are 0 → result is fractions
+  // of the full screen (pre-Phase-7 behaviour). Phase 7 regional callers
+  // pre-resolve the rect against alt1.rsWidth/rsHeight before binding and
+  // pass it as an explicit `region` to findDgMap, so this fallback isn't
+  // reached on the regional path. Defensive offset-awareness keeps external
+  // callers (e.g., future tests) from getting silently wrong fractions.
+  const sxLo = screen.x || 0;
+  const syLo = screen.y || 0;
   return {
-    x: 0,
-    y: Math.floor(screen.height * 0.10),
+    x: sxLo,
+    y: syLo + Math.floor(screen.height * 0.10),
     w: Math.floor(screen.width  * 0.50),
     h: Math.floor(screen.height * 0.80),
   };
@@ -447,13 +469,17 @@ function defaultLeftRegion(screen) {
 
 const SCAN_STEP = 3;
 
-function scanBeigeInRegion(screenData, region) {
+function scanBeigeInRegion(screenData, region, x0, y0) {
   const hits = [];
-  const xMax = Math.min(screenData.width  - 1, region.x + region.w);
-  const yMax = Math.min(screenData.height - 1, region.y + region.h);
+  // region is absolute. Buffer covers [x0..x0+screenData.width) ×
+  // [y0..y0+screenData.height) in absolute coords. Translate at
+  // getPixel; emit hits with absolute (x, y) so cluster centroids and
+  // downstream consumers stay in absolute space.
+  const xMax = Math.min(x0 + screenData.width  - 1, region.x + region.w);
+  const yMax = Math.min(y0 + screenData.height - 1, region.y + region.h);
   for (let y = region.y; y < yMax; y += SCAN_STEP) {
     for (let x = region.x; x < xMax; x += SCAN_STEP) {
-      const px = screenData.getPixel(x, y);
+      const px = screenData.getPixel(x - x0, y - y0);
       if (!px) continue;
       const r = px[0], g = px[1], b = px[2];
       // Accept ANY in-cell content type: beige fills (opened / ?-room),
@@ -519,20 +545,23 @@ const MIN_CLUSTER_HITS = 5; // below this, hit is probably a noise pixel
  * so clustering falls back to pure proximity behaviour. This keeps the
  * function safe for callers that don't have screen data handy.
  */
-function hasGapBetween(screenData, x1, y1, x2, y2) {
+function hasGapBetween(screenData, x1, y1, x2, y2, x0, y0) {
   if (!screenData) return false;
   const dx = x2 - x1;
   const dy = y2 - y1;
   let inside = 0;
   let checked = 0;
   // t = 1/4, 2/4, 3/4 — interior samples only. Endpoints are already
-  // classified as inside-cell (that's why they're in `hits`).
+  // classified as inside-cell (that's why they're in `hits`). (x1, y1)
+  // and (x2, y2) are absolute screen coords, so sx/sy are absolute too;
+  // bounds-check against [x0..x0+screenData.width) and translate at
+  // getPixel.
   for (let i = 1; i <= 3; i++) {
     const t = i / 4;
     const sx = Math.round(x1 + dx * t);
     const sy = Math.round(y1 + dy * t);
-    if (sx < 0 || sy < 0 || sx >= screenData.width || sy >= screenData.height) continue;
-    const px = screenData.getPixel(sx, sy);
+    if (sx < x0 || sy < y0 || sx >= x0 + screenData.width || sy >= y0 + screenData.height) continue;
+    const px = screenData.getPixel(sx - x0, sy - y0);
     if (!px) continue;
     checked++;
     if (isInsideCell(px[0], px[1], px[2])) inside++;
@@ -544,7 +573,7 @@ function hasGapBetween(screenData, x1, y1, x2, y2) {
   return inside * 2 < checked;
 }
 
-function clusterHits(hits, screenData) {
+function clusterHits(hits, screenData, x0, y0) {
   const n = hits.length;
   if (n === 0) return [];
 
@@ -587,7 +616,7 @@ function clusterHits(hits, screenData) {
         // Proximity test passed. Gate the union behind a border check —
         // otherwise adjacent-cell hits on thin-border layouts merge into
         // one cluster.
-        if (!hasGapBetween(screenData, hi.x, hi.y, hj.x, hj.y)) {
+        if (!hasGapBetween(screenData, hi.x, hi.y, hj.x, hj.y, x0, y0)) {
           union(i, j);
         }
       }
@@ -792,14 +821,26 @@ export function findDgMap({ screen: providedScreen, region, classifyCells = fals
 
   let screen = providedScreen;
   if (!screen) {
+    // Self-bind path (used by solo-pin Tier 1 and the calibration self-test
+    // when they don't pre-capture). Stays full-RS here — Phase 7 Target 2's
+    // regional-bind win lives in runDgMapRead's per-tick loop, which always
+    // pre-captures and passes providedScreen down.
     try { screen = a1lib.captureHoldFullRs(); }
     catch (_) { return { found: false, reason: 'capture-threw' }; }
     if (!screen) return { found: false, reason: 'capture-null' };
   }
 
   let screenData;
-  try { screenData = screen.toData(0, 0, screen.width, screen.height); }
+  // toData uses absolute coords (subtracts bind's x/y internally — see
+  // node_modules/alt1/src/base/imgref.ts:31). Using screen.x/y returns
+  // the full bound region, identical for full-RS and regional bind.
+  try { screenData = screen.toData(screen.x, screen.y, screen.width, screen.height); }
   catch (_) { return { found: false, reason: 'toData-threw' }; }
+
+  // Bind offset for absolute→local translation in the helpers below.
+  // Full-RS bind: x0=y0=0 → identity. Regional bind: x0/y0 = bind origin.
+  const x0 = screen.x;
+  const y0 = screen.y;
 
   const scanRegion = region || defaultLeftRegion(screen);
 
@@ -808,7 +849,7 @@ export function findDgMap({ screen: providedScreen, region, classifyCells = fals
     return { found: false, reason: 'empty-region', region: scanRegion };
   }
 
-  const hits = scanBeigeInRegion(screenData, scanRegion);
+  const hits = scanBeigeInRegion(screenData, scanRegion, x0, y0);
   if (hits.length < MIN_CLUSTER_HITS * 2) {
     return {
       found: false,
@@ -818,7 +859,7 @@ export function findDgMap({ screen: providedScreen, region, classifyCells = fals
     };
   }
 
-  const clusters = clusterHits(hits, screenData);
+  const clusters = clusterHits(hits, screenData, x0, y0);
   if (clusters.length < 2) {
     return {
       found: false,
@@ -910,7 +951,7 @@ export function findDgMap({ screen: providedScreen, region, classifyCells = fals
     // Pass scanRegion so classifyAllCells can clamp its ±7-cell scan to
     // the calibrated area — without this, cells outside the widget get
     // classified from world pixels.
-    result.cells = classifyAllCells(screenData, origin, pitchInfo.pitch, 7, scanRegion);
+    result.cells = classifyAllCells(screenData, origin, pitchInfo.pitch, 7, scanRegion, x0, y0);
   }
   return result;
 }

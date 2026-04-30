@@ -1,4 +1,4 @@
-# Pickup note — 2026-04-30 (post Phase 7 Target 1)
+# Pickup note — 2026-04-30 (post Phase 7 Target 2)
 
 You're continuing work on the DungKey Tracker Alt1 plugin. Read [HANDOFF.md](HANDOFF.md) first for project orientation, then this file for current state, then [OPTIMIZATION.md](OPTIMIZATION.md) for the active CPU-reduction project.
 
@@ -14,7 +14,8 @@ You're continuing work on the DungKey Tracker Alt1 plugin. Read [HANDOFF.md](HAN
 - Phase 5 — Winterface auto-probe reduction — VERIFIED 2026-04-30. Active-floor gate + two-stage capture. Established empirically that `alt1.bindRegion` cost is region-proportional — load-bearing finding for everything since.
 - Phase 6 — `cheapPanelStillPresent` regional bind + verification cadence decoupling — VERIFIED 2026-04-30. Two parts: (a) regional bind (full-RS for 30×3 read → captureHold of just the 30×3 region — ~5 orders of magnitude pixel-data reduction per fire); (b) dual-cadence design — per-tick "trust" bump + verification only every ~10 s. Side-eliminates RS3 panel-flicker false absences.
 - Phase 7 Target 1 — `readPartyPanel` regional bind — VERIFIED 2026-04-30. Threaded (x0, y0) through every helper for absolute→local translation. Bug fix: `resolveScanRect`/`panelScanRect` clamps now offset-aware. Empirical: panel-bucket max ~150-200 ms → 13.9 ms (~10-15× reduction on detection events). Steady-state unchanged (Phase 6 cache absorbs normal play).
-- **Phase 7 Targets 2 & 3 — `runDgMapRead`, `findTrianglePx`. Active. Target 2 is next.**
+- Phase 7 Target 2 — `runDgMapRead` regional bind + dgMap.js helper threading — VERIFIED 2026-04-30. `runDgMapRead` pre-resolves scanRegion per-path, captureHold of just that rect. dgMap helpers (`findDgMap`, `scanBeigeInRegion`, `clusterHits`, `hasGapBetween`, `classifyCellContents`, `classifyAllCells`) all received `(x0, y0)` for absolute→local translation. `defaultLeftRegion` made offset-aware preemptively. Empirical: dgmap-bucket avg ~11× lower (5.5 → 0.5 ms) and max ~10× lower (~165 → 16.8 ms). Bigger steady-state win than Target 1 because dgmap fires unconditionally every 30 ticks.
+- **Phase 7 Target 3 — `findTrianglePx`. Active. Final piece of Phase 7.**
 
 ## Findings worth knowing before you start
 
@@ -27,16 +28,7 @@ You're continuing work on the DungKey Tracker Alt1 plugin. Read [HANDOFF.md](HAN
 
 ## Phase 7 active task: remaining periodic full-screen captures
 
-Two targets remain. Both apply the same Phase 5/6 region-bind pattern. Each should be a separate commit so regressions are bisectable. Target 1 (`readPartyPanel`) shipped — see OPTIMIZATION.md Phase 7 Outcome subsection for the diff shape and the resolveScanRect bug-fix lesson.
-
-### Target 2 — `runDgMapRead` ([src/index.js:2725](src/index.js:2725))
-
-Similar shape, slightly lower yield.
-
-- Fires every 30 ticks (~3 s). NO active-floor gate currently — runs even outside dungeons. Scope question: is the active-floor gate something to add too, or out of scope for Phase 7?
-- Calls `captureHoldFullRs()`, passes `screen` into `findDgMap` which does `screen.toData(0, 0, screen.width, screen.height)` then reads pixels inside the calibrated dgMap region or the default left-half (~50% of screen).
-- Regional bind: replace `captureHoldFullRs()` with `captureHold(scanRegion.x, scanRegion.y, scanRegion.w, scanRegion.h)`. Need to thread the scan region into the runDgMapRead site.
-- ~50% reduction per fire (default left-half) or more (calibrated rect, often smaller).
+One target remains. Same Phase 5/6 region-bind pattern. Targets 1 + 2 shipped — see OPTIMIZATION.md Phase 7 Outcome subsections for diff shape and lessons.
 
 ### Target 3 — `findTrianglePx` ([src/dgMap.js:953](src/dgMap.js))
 
@@ -46,15 +38,9 @@ Lower priority. Called from:
 
 If user opts into `timestampedChat` later, this becomes a hot path. Worth doing for correctness even if cold for current user.
 
-### Suggested order
+### Lesson carried forward from Targets 1 & 2 (apply to Target 3)
 
-Target 2 next — touches `runDgMapRead`'s state machine but same pattern as Target 1. Target 3 third — opt-in, low priority unless user enables `timestampedChat`.
-
-Each target is a separate commit. CPU note in commit message per HANDOFF rule #6.
-
-### Lesson from Target 1 (apply to Targets 2 & 3)
-
-When swapping a `captureHoldFullRs()` → `captureHold(rect)` and the downstream code reads `getPixel(absX, absY)` against the resulting `screenData`, every read site needs absolute→local translation. Plus any helper that internally calls `resolveScanRect`-style logic with `screen.width`/`.height` clamps must be made offset-aware (use `screen.x + screen.width - 1` for upper bound). Symptom of forgetting: detection silently fails fast, perf line shows panel-bucket max collapsing far below normal — feels like a CPU win but is actually a fast-bail on garbage data.
+When swapping a `captureHoldFullRs()` → `captureHold(rect)` and the downstream code reads `getPixel(absX, absY)` against the resulting `screenData`, every read site needs absolute→local translation. Plus any helper that internally calls `resolveScanRect`-style logic with `screen.width`/`.height` clamps must be made offset-aware (use `screen.x + screen.width - 1` for upper bound). Symptom of forgetting: detection silently fails fast, perf line shows the bucket max collapsing far below normal — feels like a CPU win but is actually a fast-bail on garbage data.
 
 ## Working-style flags (carry from HANDOFF.md)
 
@@ -68,17 +54,16 @@ When swapping a `captureHoldFullRs()` → `captureHold(rect)` and the downstream
 
 ## State of local repo
 
-`main` is up to date with `origin/main` after Phase 7 part 1 push.
+`main` is up to date with `origin/main` after Phase 7 part 2 push (Target 2 commit).
 
 ## First moves
 
 1. Read this file (you're here).
 2. Read [HANDOFF.md](HANDOFF.md) for project orientation, working-style rules, and the 17 load-bearing invariants.
-3. Read [OPTIMIZATION.md](OPTIMIZATION.md) Phases 5, 6, and 7 Outcome subsection (the proven patterns you're replicating) and the Phase 7 remaining-target enumeration.
+3. Read [OPTIMIZATION.md](OPTIMIZATION.md) Targets 1 + 2 Outcome subsections (the proven patterns you're replicating) and the Target 3 enumeration.
 4. Skim user memory in `C:\Users\Aari Jabar\.claude\projects\C--Users-Aari-Jabar-Desktop-rs-scripts\memory\`. Especially `feedback_pace_control.md`, `feedback_confirm_before_code.md`.
-5. Greet the user, summarize state in 2-3 sentences, propose Target 2 (`runDgMapRead`) with the precise diff. Wait for greenlight.
-6. After user verifies in-game (Ctrl+R + dungeon entry + watch dgMap detection logs as before), commit + push as Phase 7 part 2, update OPTIMIZATION.md.
-7. Move on to Target 3 only when user signals.
+5. Greet the user, summarize state in 2-3 sentences, propose Target 3 (`findTrianglePx`) with the precise diff. Wait for greenlight.
+6. After user verifies in-game (Ctrl+R + a floor with door-info events to exercise solo-pin's findTrianglePx fall-through), commit + push as Phase 7 part 3, update OPTIMIZATION.md.
 
 ## Out of scope for Phase 7
 

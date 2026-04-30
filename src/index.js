@@ -2727,8 +2727,32 @@ function runDgMapRead() {
   if (tickCount < nextDgTick) return;
   nextDgTick = tickCount + DGMAP_INTERVAL_TICKS;
 
+  // Phase 7 Target 2: pre-resolve the scan region BEFORE the bind so we
+  // can captureHold only that region instead of the full RS window.
+  // Each path takes its narrowest plausible rect (calibrated → calibration
+  // box; LOCKED → narrow re-scan around known origin; UNKNOWN/LOST →
+  // default left half). The full-screen fallback inside the UNKNOWN/LOST
+  // branch keeps captureHoldFullRs because that path needs to see the
+  // full screen to recover from a missed left-half scan.
+  let scanRegion;
+  if (calibration.dgMap) {
+    scanRegion = calibration.dgMap;
+  } else if (_dgState === 'LOCKED' && _dgLocked) {
+    scanRegion = _dgLockedRegion(_dgLocked.origin, _dgLocked.pitch);
+  } else {
+    // Default left half — same shape as defaultLeftRegion(screen) in
+    // dgMap.js but computed from rsWidth/rsHeight so we don't need a
+    // full-RS bind first to read screen.width/height.
+    scanRegion = {
+      x: 0,
+      y: Math.floor(alt1.rsHeight * 0.10),
+      w: Math.floor(alt1.rsWidth  * 0.50),
+      h: Math.floor(alt1.rsHeight * 0.80),
+    };
+  }
+
   let screen;
-  try { screen = a1lib.captureHoldFullRs(); }
+  try { screen = a1lib.captureHold(scanRegion.x, scanRegion.y, scanRegion.w, scanRegion.h); }
   catch (_) { return; }
   if (!screen) return;
 
@@ -2769,9 +2793,10 @@ function runDgMapRead() {
     _dgLocked = { origin: res.origin, pitch: res.pitch, cellSize: res.cellSize };
     _dgMissStreak = 0;
   } else if (_dgState === 'LOCKED' && _dgLocked) {
-    // Cheap path: narrow region around known origin.
-    const region = _dgLockedRegion(_dgLocked.origin, _dgLocked.pitch);
-    res = findDgMap({ screen, region, classifyCells: true });
+    // Cheap path: narrow region around known origin (already resolved
+    // into scanRegion above; reuse it as both the bind and the explicit
+    // region passed to findDgMap so the two stay in lockstep).
+    res = findDgMap({ screen, region: scanRegion, classifyCells: true });
     if (!res.found) {
       _dgMissStreak++;
       if (_dgMissStreak >= DG_LOST_MISS_THRESHOLD) {
@@ -2797,10 +2822,21 @@ function runDgMapRead() {
     };
   } else {
     // UNKNOWN or LOST: left-half scan first, full-screen fallback if miss.
-    // No explicit region → findDgMap uses its defaultLeftRegion.
-    res = findDgMap({ screen, classifyCells: true });
+    // Pass scanRegion explicitly (resolved above as the default left half
+    // from rsWidth/rsHeight) so findDgMap doesn't fall back to its
+    // defaultLeftRegion(screen) — that fallback would compute fractions
+    // of the regional bind's width/height, which is wrong.
+    res = findDgMap({ screen, region: scanRegion, classifyCells: true });
     if (!res.found) {
-      res = findDgMap({ screen, region: _dgFullScreenRegion(screen), classifyCells: true });
+      // Fallback: re-bind full-RS for a wider sweep. Replaces the regional
+      // bind per the one-bind-per-app rule — fine, the regional bind is
+      // no longer needed once we drop into the full-screen fallback.
+      try {
+        screen = a1lib.captureHoldFullRs();
+        if (screen) {
+          res = findDgMap({ screen, region: _dgFullScreenRegion(screen), classifyCells: true });
+        }
+      } catch (_) { /* keep prior res; the not-found branch below handles it */ }
     }
     if (!res.found) {
       // Silent most of the time — map is closed or off-screen. Log only

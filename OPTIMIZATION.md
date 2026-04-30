@@ -35,7 +35,7 @@ Intentionally vague at this point — these will sharpen as we learn. Each phase
 - **Phase 4 — Slow-CPU verification** — READY. Push to main + ask original slow-CPU testers to retest.
 - **Phase 5 — Winterface auto-probe reduction** — VERIFIED 2026-04-30. Active-floor gate + two-stage capture (cheap region bind for peek, full bind only on confirmed peek hit). User-confirmed felt-instant winterface registration on test deploy.
 - **Phase 6 — `cheapPanelStillPresent` regional bind + verification cadence decoupling** — VERIFIED 2026-04-30. Part 1: regional bind in `cheapPanelStillPresent` (full-RS bind for a 30×3 read → captureHold of just the 30×3 region). Part 2: dual-cadence design — per-tick "trust" bump + verification only every ~10 s. Side-eliminates RS3 panel-flicker false absences. User-confirmed clean across multi-floor runs with panel open.
-- **Phase 7 — Remaining periodic full-screen captures.** IN PROGRESS. Target 1 (`readPartyPanel`) VERIFIED 2026-04-30 — regional bind drops pixel-data per fire from ~100% of screen to ~28%, threading (x0, y0) through all helpers for absolute→local coord translation. Empirical: panel-bucket max dropped ~10-15× on detection events (~150-200 ms → 13.9 ms verified). Steady-state unchanged (Phase 6 cache absorbs normal play). Targets 2 (`runDgMapRead`) and 3 (`findTrianglePx`) still open.
+- **Phase 7 — Remaining periodic full-screen captures.** IN PROGRESS. Target 1 (`readPartyPanel`) VERIFIED 2026-04-30. Target 2 (`runDgMapRead` + dgMap.js helpers) VERIFIED 2026-04-30 — same regional-bind pattern, dgmap-bucket avg dropped ~11× (5.5 → 0.5 ms) and max ~10× (~165 → 16.8 ms). Per-fire cost ~165 ms → ~15 ms. Bigger steady-state win than Target 1 because dgmap fires unconditionally every 30 ticks (no Phase 6-style cache fast-path). Target 3 (`findTrianglePx`) still open.
 
 ---
 
@@ -325,15 +325,42 @@ Three more periodic `captureHoldFullRs()` callers remain, each amenable to the P
 
 Targets, in approximate yield order:
 
-- **Target 1 — `readPartyPanel`** ([src/partyPanel.js:926](src/partyPanel.js:926)) — VERIFIED 2026-04-30. See Outcome below.
+- **Target 1 — `readPartyPanel`** ([src/partyPanel.js:926](src/partyPanel.js:926)) — VERIFIED 2026-04-30. See Target 1 Outcome below.
 
-- **Target 2 — `runDgMapRead`** ([src/index.js:2725](src/index.js:2725)) — every 30 ticks (~3 s) inside `findDgMap`. The full bind feeds a `screen.toData` call that's already region-scoped (calibrated dgMap region or default left-half). Switching `captureHoldFullRs()` → `captureHold(scanRegion.x, scanRegion.y, scanRegion.w, scanRegion.h)` saves the bind. Yield depends on the ratio of (calibrated region / default left-half) to full screen — typically ~40-50% of full screen, so ~50% reduction per fire.
+- **Target 2 — `runDgMapRead`** ([src/index.js:2725](src/index.js:2725)) — VERIFIED 2026-04-30. See Target 2 Outcome below.
 
 - **Target 3 — `findTrianglePx`** ([src/dgMap.js:953](src/dgMap.js:953)) — called from solo-pin cascade (event-driven, on door-info events) and `runTriangleSnapshot` (every 3 ticks when `settings.timestampedChat` is on; off by default for current user). Takes a `region` param. Same pattern as the others.
 
 **Event-driven (low priority, mention for completeness):** `findDgMap` from solo-pin cascade, `captureEndDungeonTimer` (already paired with Phase 5's stage 2), Eyedrop, Run-layout-test, Calibrate Winterface.
 
 Tackle one target per commit so any regression is bisectable. See [NEXT.md](NEXT.md) for the active pickup task.
+
+### Outcome — Target 2 `runDgMapRead` (2026-04-30)
+
+**What landed:**
+- [src/index.js](src/index.js) `runDgMapRead`: pre-resolve the scan region BEFORE the bind based on which path the tick takes (calibrated → `calibration.dgMap`; LOCKED → `_dgLockedRegion(origin, pitch)` narrow re-scan; UNKNOWN/LOST → default left half computed from `alt1.rsWidth/rsHeight`). Single `captureHold(scanRegion.x, scanRegion.y, scanRegion.w, scanRegion.h)` for all primary paths. UNKNOWN/LOST full-screen fallback re-binds full-RS only when the regional left-half scan misses (rare).
+- [src/dgMap.js](src/dgMap.js) `findDgMap`: `screen.toData(0, 0, ...)` → `screen.toData(screen.x, screen.y, ...)`. Capture `(x0, y0) = (screen.x, screen.y)` and thread to every pixel-reading helper.
+- Translation pattern across helpers: `scanBeigeInRegion`, `clusterHits`, `hasGapBetween`, `classifyCellContents`, `classifyAllCells` all received `(x0, y0)` params. `screenData.getPixel(x, y)` → `screenData.getPixel(x - x0, y - y0)` at every site. Bounds adjusted from `[0..screenData.width-1]` to `[x0..x0+screenData.width-1]` (and Y).
+- `defaultLeftRegion(screen)` made offset-aware (uses `screen.x || 0` etc.) as a defensive safety net for any external caller — though the regional path always pre-resolves and passes an explicit region, so the fallback isn't reached on the regional path.
+- `findDgMap`'s self-bind path (used by solo-pin Tier 1 and the calibration self-test when they don't pre-capture) deliberately stays full-RS — Target 2 scoped to `runDgMapRead`'s per-tick loop. The translation pattern works for both bind shapes (full-RS → x0=y0=0 → identity).
+- Centroid sums in clusters (`minX/maxX/minY/maxY`) and `triangleCentroids` accumulate absolute coords by construction — output contracts unchanged.
+
+**CPU impact:**
+- Per-fire: bind cost dropped from ~100% of screen (full-RS) to the path-specific scan region. Calibrated/LOCKED paths typically <10-20% of screen; UNKNOWN/LOST default left half is 50%.
+- Empirical: dgmap-bucket avg dropped ~11× (5.5 → 0.5 ms over 600 ticks) and max ~10× (~165 → 16.8 ms). Per-fire cost ~165 ms → ~15 ms.
+- Bigger steady-state win than Target 1 because `runDgMapRead` fires unconditionally every 30 ticks (no Phase 6-style cache fast-path), so the per-fire savings show up directly in bucket avg.
+
+**Iteration history:**
+1. Catalogued translation sites in dgMap.js: `scanBeigeInRegion`, `clusterHits`, `hasGapBetween`, `classifyCellContents`, `classifyAllCells`, plus `defaultLeftRegion`.
+2. Designed `runDgMapRead` to pre-resolve scanRegion per-path BEFORE the bind, so the bind matches the scan rect exactly. UNKNOWN/LOST default-left-half rect computed from `alt1.rsWidth/rsHeight` directly to avoid needing a full-RS bind first.
+3. Threaded (x0, y0) through bottom-up: leaf helpers first, then `findDgMap` entry, then `runDgMapRead`. Made `defaultLeftRegion` offset-aware preemptively, avoiding the resolveScanRect-trap that bit Target 1.
+4. Built clean. User verified mid-boss-fight floor with the perf line above — no detection regressions, dgmap-bucket reduction empirically confirmed.
+
+**Touchpoints:** [src/index.js](src/index.js) `runDgMapRead`; [src/dgMap.js](src/dgMap.js) `findDgMap`, `defaultLeftRegion`, `scanBeigeInRegion`, `hasGapBetween`, `clusterHits`, `classifyCellContents`, `classifyAllCells`.
+
+**Acceptance:** ✓ dgMap state machine still functional (UNKNOWN → LOCKED transitions, LOCKED narrow scans, fallback path); ✓ door-info events still self-pin via the cached origin path; ✓ no detection regressions during a real floor; ✓ dgmap-bucket reduction empirically verified.
+
+---
 
 ### Outcome — Target 1 `readPartyPanel` (2026-04-30)
 
