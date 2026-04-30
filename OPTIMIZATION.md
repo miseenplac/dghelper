@@ -101,6 +101,14 @@ Plus: the `_calActive` declaration was moved above the first synchronous `render
 
 **Commit reference:** see `Phase 1: calibration smoothness` in git log on `main`. (SHA omitted because it's brittle across rebases — message-based lookup is stable.)
 
+**Post-ship regression discovered + fixed 2026-04-30 (commit `c9b99f4`):** the original Phase 1 ship added the clobber guard inside `renderCalibrationStatus` (early-return when `_calActive === true`) but left four inline `renderCalibrationStatus()` calls in the `try` body of `runCalibrationForMetric` — at the mouse-off-RS error paths, the region-too-small error path, and the success path. Every one of those inline calls hit the `_calActive` gate and silently became no-ops, because `_calActive` only gets cleared in the `finally` block AFTER they run. The countdown text ("Hover TOP-LEFT — 1s") stuck in the DOM for up to 1 s after every calibration exit, until the 1 s setInterval at [src/index.js:1084](src/index.js:1084) fired the next render cycle.
+
+Latent for weeks: the success path always triggers the BR countdown's first tick within ~150 ms of TL capture, which repaints the status text via `captureMouseAfterDelay`'s loop, hiding the dead-render. The error paths showed the bug clearly. Surfaced when a slow-CPU tester (Phase 4) hovered over an interface-unlocked resize handle during TL capture — `readMousePosition()` returned null → error path fired → countdown text "Hover TOP-LEFT — 1s" stuck on screen until the next 1 s tick → tester reported the plugin as frozen.
+
+Fix: removed the four no-op inline calls; added a single `renderCalibrationStatus()` to the `finally` block AFTER `_calActive = false`. One call covers every exit path. Documented as HANDOFF invariant #18 so future edits don't regress.
+
+CPU: neutral — same number of operations, just sequenced correctly.
+
 ---
 
 ## Phase 2 — Profiling instrumentation
