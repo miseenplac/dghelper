@@ -906,13 +906,18 @@ const ROK_WARN_STALE_MS = 5000;
 let _lastPartyPanelDetectedAt = 0;
 
 // Cached origin from the most recent CONFIRMED full-OCR detection.
-// While set, runPartyPanelRead's per-tick fast path samples pixels at
-// these coordinates (cheap red-classifier check) instead of running
-// the heavy OCR every 30 ticks. Bumps _lastPartyPanelDetectedAt on
-// each pass so the RoK warning banner doesn't blip during the OCR
-// re-confirmation gap. Cleared when the cheap check fails OR when the
-// not-found UI-clear hysteresis crosses PANEL_UI_CLEAR_THRESHOLD.
+// While set, runPartyPanelRead's fast path bumps _lastPartyPanel-
+// DetectedAt every tick (banner stays cleared) and runs
+// cheapPanelStillPresent once every PANEL_VERIFY_INTERVAL_TICKS as
+// periodic verification. Per-tick verification was wasted CPU AND
+// occasionally sampled sub-second RS3 panel-side render flicker
+// frames as false absences (forcing a full OCR re-detect cycle for
+// no reason). Decoupling the trust cadence from the verify cadence
+// fixes both. Cleared when a verification fails OR when the not-found
+// UI-clear hysteresis crosses PANEL_UI_CLEAR_THRESHOLD.
+const PANEL_VERIFY_INTERVAL_TICKS = 100; // ~10 s
 let _panelStableOrigin = null;
+let nextPanelVerifyTick = 0;
 
 function updateRokWarning() {
   const banner = document.getElementById('rok-warning');
@@ -2228,19 +2233,24 @@ function panelDetectionMatches(prev, curr) {
 // most strokes and fall below threshold even with the panel right
 // there. Region-scan + hit-count is way more tolerant.
 //
-// Cost: a1lib.captureHoldFullRs() handle + one screen.toData() of
-// 30×3 px (360 bytes) + up to 90 RGB classifier evals (early-returns
-// on hit 3). Microseconds.
+// Cost: a1lib.captureHold(x0, y0, 30, 3) regional bind + one screen.toData()
+// of the same 30×3 px (90 pixels) + up to 90 RGB classifier evals
+// (early-returns on hit 3). Microseconds. The regional bind is what makes
+// this fast — Phase 5 confirmed alt1.bindRegion cost is meaningfully
+// region-proportional, so this avoids paying full-screen capture cost
+// every tick to read 90 pixels.
 function cheapPanelStillPresent(origin) {
   if (!window.alt1 || !alt1.permissionPixel) return false;
-  let screen;
-  try { screen = a1lib.captureHoldFullRs(); }
-  catch (_) { return false; }
-  if (!screen) return false;
   const W = 30, H = 3;
   const x0 = Math.max(0, origin.x - 5);
   const y0 = Math.max(0, origin.y - 1);
+  let screen;
+  try { screen = a1lib.captureHold(x0, y0, W, H); }
+  catch (_) { return false; }
+  if (!screen) return false;
   let data;
+  // toData uses absolute coords (subtracts bind's x/y internally), so this
+  // call is identical whether bind is full-RS or regional.
   try { data = screen.toData(x0, y0, W, H); }
   catch (_) { return false; }
   if (!data) return false;
@@ -2309,16 +2319,23 @@ function runPartyPanelRead() {
   const cur = floor.current();
   if (!cur || cur.ended) return;
 
-  // Cheap pixel re-verification fast path. While we have a confirmed
-  // origin from a previous OCR detection AND the cached pixels still
-  // pass the red classifier, skip the heavy OCR cadence and just bump
-  // the warning timestamp. Resolves the RoK banner flicker (cheap
-  // check fills the gap between OCR cycles) and saves OCR CPU while
-  // the panel is steady-state. On failure (cursor moved off slot 1,
-  // panel closed, panel dragged elsewhere), clear the cache and fall
-  // through to the existing OCR cadence which will re-confirm or
-  // eventually clear via the absence-streak machinery.
+  // Cached-origin fast path. Two distinct cadences:
+  //   - Per-tick: bump _lastPartyPanelDetectedAt so the banner stays
+  //     cleared. We trust the cache between verifications.
+  //   - Per PANEL_VERIFY_INTERVAL_TICKS (~10 s): run cheapPanelStill-
+  //     Present as periodic verification. Pass keeps the cache valid;
+  //     fail clears it and falls through to OCR cadence.
+  // The slow verification cadence avoids per-tick CPU AND sidesteps
+  // sub-second RS3 panel-side render flicker frames that briefly blank
+  // the slot-1 text. A verification landing on a flicker frame is
+  // statistically rare given the cadence ratio (10 s vs ms-scale
+  // flicker); when it does happen, OCR re-detects within ~3 s.
   if (_panelStableOrigin) {
+    if (tickCount < nextPanelVerifyTick) {
+      _lastPartyPanelDetectedAt = Date.now();
+      return;
+    }
+    nextPanelVerifyTick = tickCount + PANEL_VERIFY_INTERVAL_TICKS;
     if (cheapPanelStillPresent(_panelStableOrigin)) {
       _lastPartyPanelDetectedAt = Date.now();
       return;
@@ -2468,11 +2485,14 @@ function runPartyPanelRead() {
   // even if the cheap-check cache below isn't established yet.
   _lastPartyPanelDetectedAt = Date.now();
 
-  // Cache the confirmed origin for the per-tick cheap pixel re-verification
-  // fast path at the top of this function. Set only after the temporal-
-  // confirmation gate passes — same world-fluke false-positive protection
-  // as everything else here.
+  // Cache the confirmed origin for the cached-origin fast path at the
+  // top of this function. Set only after the temporal-confirmation gate
+  // passes — same world-fluke false-positive protection as everything
+  // else here. Schedule the first verification a full interval out so
+  // the freshly-confirmed origin enjoys a 10 s "trust" window before
+  // the first cheap-check.
   _panelStableOrigin = { x: res.origin.x, y: res.origin.y };
+  nextPanelVerifyTick = tickCount + PANEL_VERIFY_INTERVAL_TICKS;
 
   // Cache + render on every successful (confirmed) read. Debug logging
   // is still state-change-deduped below.

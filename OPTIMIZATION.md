@@ -34,6 +34,7 @@ Intentionally vague at this point — these will sharpen as we learn. Each phase
 - **Phase 3 — Targeted reductions** — VERIFIED 2026-04-30. RoK cheap pixel re-verification (Solution F) shipped — banner no longer flickers on/off during a floor; OCR is skipped while the cached origin's red pixels still pass the classifier. Provisional-bump tweak halved open-the-panel-during-floor latency from ~6 s to ~3 s.
 - **Phase 4 — Slow-CPU verification** — READY. Push to main + ask original slow-CPU testers to retest.
 - **Phase 5 — Winterface auto-probe reduction** — VERIFIED 2026-04-30. Active-floor gate + two-stage capture (cheap region bind for peek, full bind only on confirmed peek hit). User-confirmed felt-instant winterface registration on test deploy.
+- **Phase 6 — `cheapPanelStillPresent` regional bind + verification cadence decoupling** — VERIFIED 2026-04-30. Part 1: regional bind in `cheapPanelStillPresent` (full-RS bind for a 30×3 read → captureHold of just the 30×3 region). Part 2: dual-cadence design — per-tick "trust" bump + verification only every ~10 s. Side-eliminates RS3 panel-flicker false absences. User-confirmed clean across multi-floor runs with panel open.
 
 ---
 
@@ -277,26 +278,59 @@ F was preferred for being the only option that delivers BOTH the flicker fix AND
 
 ---
 
-## Phase 6 candidate — Full-screen capture audit
+## Phase 6 — `cheapPanelStillPresent` regional bind + verification cadence decoupling
 
-**Status:** OPEN. Discovered during Phase 5; user explicitly flagged as the next investigation direction.
+**Status:** VERIFIED 2026-04-30. Two-part change shipped; user-confirmed clean behaviour across multi-floor runs.
 
-The Phase 5 result (alt1's `bindRegion` is region-proportional in cost) means every other periodic full-screen `captureHoldFullRs()` call in the plugin is paying for pixels it never reads. Direct grep of `captureHoldFullRs` across `src/` reveals:
+**Objective:** apply the Phase 5 finding (alt1's `bindRegion` cost is region-proportional) to the plugin's most egregious full-screen-for-tiny-read site, and resolve a residual flicker in the RoK warning banner.
 
-**Periodic / per-tick (highest yield candidates):**
-- `cheapPanelStillPresent` ([src/index.js:2237](src/index.js)) — fires EVERY TICK while the RoK panel cache is valid. Captures the full RS window for a 30×3 region read. Most striking case: function literally named "cheap" but does the most expensive bind in the tick loop.
-- `runDgMapRead` ([src/index.js:2711](src/index.js)) — every 30 ticks (~3 s). Full bind, then `findDgMap` does a region toData inside.
-- `runPartyPanelRead` → `readPartyPanel` ([src/partyPanel.js:931](src/partyPanel.js)) — every 30 ticks (~3 s) when active-floor-gate passes. Full bind.
-- `runTriangleSnapshot` → `findTrianglePx` ([src/dgMap.js:953](src/dgMap.js)) — every 3 ticks (~300 ms) when `settings.timestampedChat` is on. Off by default for current user.
+### Outcome (2026-04-30)
 
-**Event-driven (lower priority):**
-- `findDgMap` ([src/dgMap.js:795](src/dgMap.js)) — called from solo-pin cascade on door-info events.
-- `captureEndDungeonTimer` ([src/timer.js:193](src/timer.js)) — already paired with Phase 5's stage 2.
-- `readPixelRgb` (eyedrop, [src/index.js:483](src/index.js)) — single user click.
-- `runCalibration` (Run layout test, [src/index.js:577](src/index.js)) — single user click.
-- Calibrate Winterface button ([src/index.js:1233](src/index.js)) — single user click.
+**Part 1 — Regional bind in `cheapPanelStillPresent`** ([src/index.js](src/index.js)).
+- Old: `captureHoldFullRs()` then `screen.toData(x0, y0, 30, 3)` — full-screen capture for a 90-pixel read, every tick the RoK cache was valid.
+- New: `captureHold(x0, y0, 30, 3)` — bind only the 30×3 region. `screen.toData(x0, y0, 30, 3)` unchanged because toData uses absolute coords and converts internally (verified at [alt1/src/base/imgref.ts:31-33](node_modules/alt1/src/base/imgref.ts:31)).
+- Pixel-data per fire: dropped from ~2 M (1920×1080) to 90. ~5 orders of magnitude reduction. Highest savings ratio of any change in the project.
 
-The same two-stage / regional-bind pattern likely applies to all four periodic candidates. `cheapPanelStillPresent` is the obvious first target — it's the highest-frequency caller AND it only reads a 30×3 window, so the savings ratio per fire would be enormous (4-5 orders of magnitude in pixel-data, not just the ~73% of the winterface case).
+**Part 2 — Dual-cadence verification.**
+After Part 1 shipped, user reported a residual issue: the RoK warning banner flickered a couple of times at floor-start, even with the panel open and steady. Investigation traced this to two interacting problems:
+1. `_panelStableOrigin` survives across the inter-floor gap. At floor-start, the cheap-check ran every tick on those (potentially-stale-or-flickering) coords.
+2. RS3's panel UI itself flickers for a few ms during state transitions (the panel re-anchors). During those frames, slot-1 red text is genuinely absent → cheap-check saw 0 hits → failed → cleared `_panelStableOrigin` → forced a full OCR re-detect cycle.
+
+The fix decouples the per-tick "trust" cadence from the verification cadence:
+- New constant `PANEL_VERIFY_INTERVAL_TICKS = 100` (~10 s).
+- New state `nextPanelVerifyTick`.
+- While `_panelStableOrigin` is set, every tick bumps `_lastPartyPanelDetectedAt` (banner stays cleared). `cheapPanelStillPresent` fires only every 10 s as a periodic verification. On pass: continue trust window. On fail: clear origin, fall through to OCR cadence.
+- First verification scheduled a full interval out from a freshly-cached origin, so newly-confirmed panels get a 10 s "trust" window before any verification.
+
+**Findings worth preserving:**
+- `alt1.bindRegion` cost is meaningfully region-proportional. Phase 5 implied it; Phase 6 confirmed via the user-felt result. Future region-bind optimizations are real wins, not speculative.
+- RS3's RoK panel UI flickers for ms during state transitions. Per-tick cheap-checks would occasionally sample those frames as false absences. Slow verification cadence (10 s vs ms-scale flicker) statistically dodges them.
+- The trust-vs-verify decoupling is the design language: when state changes slowly, trust between checks rather than verify every tick.
+
+**Accepted residual edge case:**
+After closing the panel mid-floor, waiting for the warning, then reopening it, the banner can flash twice (~1 s each) before settling. Cause: OCR cycles flap between found/not-found while RS3's panel re-render animation completes. Each found→miss→found pattern interrupts temporal-confirmation and produces a brief banner flash (3 s OCR cadence + 5 s stale → 6 s gap when bumps are interleaved with misses → banner shows for ~1 s in between). Fixable with OCR-miss tolerance (mirror of cheap-check tolerance), but cost is ~6 s slower close-panel detection. User accepted as cosmetic edge case (rare flow, brief visual artifact, no functional impact).
+
+**Touchpoints:** [src/index.js](src/index.js) — `cheapPanelStillPresent`, `runPartyPanelRead`, `_panelStableOrigin` declaration block.
+
+**Acceptance:** banner stays cleared throughout multi-floor runs with panel open ✓; floor-start flicker resolved ✓; regional bind compiles cleanly and behaviour matches expectations ✓.
+
+---
+
+## Phase 7 candidate — Remaining periodic full-screen captures
+
+**Status:** OPEN. Three more periodic `captureHoldFullRs()` callers remain, each amenable to the Phase 5/6 region-bind pattern.
+
+Targets, in approximate yield order:
+
+- **`runDgMapRead`** ([src/index.js:2711](src/index.js)) — every 30 ticks (~3 s) inside `findDgMap`. The full bind feeds a `screen.toData` call that's already region-scoped (calibrated dgMap region or default left-half). Switching `captureHoldFullRs()` → `captureHold(scanRegion.x, scanRegion.y, scanRegion.w, scanRegion.h)` saves the bind. Yield depends on the ratio of (calibrated region / default left-half) to full screen — typically ~40-50% of full screen, so ~50% reduction per fire.
+
+- **`readPartyPanel`** ([src/partyPanel.js:931](src/partyPanel.js)) — every 30 ticks (~3 s) when active-floor gate passes. Full bind, then `screen.toData` reads the panelScanRect (right ~40% × middle 70% of screen ≈ 28% of full). ~70% reduction per fire if region-bound.
+
+- **`findTrianglePx`** ([src/dgMap.js:953](src/dgMap.js)) — called from solo-pin cascade (event-driven, on door-info events) and `runTriangleSnapshot` (every 3 ticks when `settings.timestampedChat` is on; off by default for current user). Takes a `region` param. Same pattern as the others.
+
+**Event-driven (low priority, mention for completeness):** `findDgMap` from solo-pin cascade, `captureEndDungeonTimer` (already paired with Phase 5's stage 2), Eyedrop, Run-layout-test, Calibrate Winterface.
+
+Tackle one target per commit so any regression is bisectable. See [NEXT.md](NEXT.md) for the active pickup task.
 
 ---
 
