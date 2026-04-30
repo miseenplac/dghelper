@@ -1132,14 +1132,12 @@ async function runCalibrationForMetric(meta) {
       `Hover TOP-LEFT of ${meta.label}`, 5000, statusEl);
     if (!p1) {
       dbg('error', `Calibration (${meta.label}): mouse not over RS window at TL capture. Aborted.`);
-      renderCalibrationStatus();
       return;
     }
     const p2 = await captureMouseAfterDelay(
       `Hover BOTTOM-RIGHT of ${meta.label}`, 5000, statusEl);
     if (!p2) {
       dbg('error', `Calibration (${meta.label}): mouse not over RS window at BR capture. Aborted.`);
-      renderCalibrationStatus();
       return;
     }
 
@@ -1155,13 +1153,11 @@ async function runCalibrationForMetric(meta) {
       dbg('error',
         `Calibration (${meta.label}): region too small (${region.w}×${region.h}). `
         + `Re-run and make sure you hover TL and BR separately.`);
-      renderCalibrationStatus();
       return;
     }
 
     calibration[meta.key] = region;
     saveCalibration();
-    renderCalibrationStatus();
     dbg('match',
       `Calibration (${meta.label}): saved (${region.x},${region.y}) ${region.w}×${region.h}.`);
 
@@ -1181,8 +1177,16 @@ async function runCalibrationForMetric(meta) {
       _lastDgMapLog = null;
     }
   } finally {
+    // Clear the gate FIRST so renderCalibrationStatus() below isn't
+    // suppressed by its own _calActive early-return. Without this, the
+    // countdown text ("Hover TOP-LEFT — 1s") sticks in the DOM for up
+    // to 1 s after any exit path until the 1 s setInterval at the
+    // bottom of this file fires the next render cycle. Most visible
+    // on the error paths (mouse off RS window, region too small) where
+    // the user otherwise sees the plugin appear frozen on "1s".
     _calActive = false;
     if (btn) btn.disabled = false;
+    renderCalibrationStatus();
   }
 }
 
