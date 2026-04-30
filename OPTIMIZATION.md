@@ -35,6 +35,7 @@ Intentionally vague at this point — these will sharpen as we learn. Each phase
 - **Phase 4 — Slow-CPU verification** — READY. Push to main + ask original slow-CPU testers to retest.
 - **Phase 5 — Winterface auto-probe reduction** — VERIFIED 2026-04-30. Active-floor gate + two-stage capture (cheap region bind for peek, full bind only on confirmed peek hit). User-confirmed felt-instant winterface registration on test deploy.
 - **Phase 6 — `cheapPanelStillPresent` regional bind + verification cadence decoupling** — VERIFIED 2026-04-30. Part 1: regional bind in `cheapPanelStillPresent` (full-RS bind for a 30×3 read → captureHold of just the 30×3 region). Part 2: dual-cadence design — per-tick "trust" bump + verification only every ~10 s. Side-eliminates RS3 panel-flicker false absences. User-confirmed clean across multi-floor runs with panel open.
+- **Phase 7 — Remaining periodic full-screen captures.** IN PROGRESS. Target 1 (`readPartyPanel`) VERIFIED 2026-04-30 — regional bind drops pixel-data per fire from ~100% of screen to ~28%, threading (x0, y0) through all helpers for absolute→local coord translation. Empirical: panel-bucket max dropped ~10-15× on detection events (~150-200 ms → 13.9 ms verified). Steady-state unchanged (Phase 6 cache absorbs normal play). Targets 2 (`runDgMapRead`) and 3 (`findTrianglePx`) still open.
 
 ---
 
@@ -316,21 +317,48 @@ After closing the panel mid-floor, waiting for the warning, then reopening it, t
 
 ---
 
-## Phase 7 candidate — Remaining periodic full-screen captures
+## Phase 7 — Remaining periodic full-screen captures
 
-**Status:** OPEN. Three more periodic `captureHoldFullRs()` callers remain, each amenable to the Phase 5/6 region-bind pattern.
+**Status:** IN PROGRESS. Target 1 VERIFIED 2026-04-30; Targets 2 and 3 open.
+
+Three more periodic `captureHoldFullRs()` callers remain, each amenable to the Phase 5/6 region-bind pattern.
 
 Targets, in approximate yield order:
 
-- **`runDgMapRead`** ([src/index.js:2711](src/index.js)) — every 30 ticks (~3 s) inside `findDgMap`. The full bind feeds a `screen.toData` call that's already region-scoped (calibrated dgMap region or default left-half). Switching `captureHoldFullRs()` → `captureHold(scanRegion.x, scanRegion.y, scanRegion.w, scanRegion.h)` saves the bind. Yield depends on the ratio of (calibrated region / default left-half) to full screen — typically ~40-50% of full screen, so ~50% reduction per fire.
+- **Target 1 — `readPartyPanel`** ([src/partyPanel.js:926](src/partyPanel.js:926)) — VERIFIED 2026-04-30. See Outcome below.
 
-- **`readPartyPanel`** ([src/partyPanel.js:931](src/partyPanel.js)) — every 30 ticks (~3 s) when active-floor gate passes. Full bind, then `screen.toData` reads the panelScanRect (right ~40% × middle 70% of screen ≈ 28% of full). ~70% reduction per fire if region-bound.
+- **Target 2 — `runDgMapRead`** ([src/index.js:2725](src/index.js:2725)) — every 30 ticks (~3 s) inside `findDgMap`. The full bind feeds a `screen.toData` call that's already region-scoped (calibrated dgMap region or default left-half). Switching `captureHoldFullRs()` → `captureHold(scanRegion.x, scanRegion.y, scanRegion.w, scanRegion.h)` saves the bind. Yield depends on the ratio of (calibrated region / default left-half) to full screen — typically ~40-50% of full screen, so ~50% reduction per fire.
 
-- **`findTrianglePx`** ([src/dgMap.js:953](src/dgMap.js)) — called from solo-pin cascade (event-driven, on door-info events) and `runTriangleSnapshot` (every 3 ticks when `settings.timestampedChat` is on; off by default for current user). Takes a `region` param. Same pattern as the others.
+- **Target 3 — `findTrianglePx`** ([src/dgMap.js:953](src/dgMap.js:953)) — called from solo-pin cascade (event-driven, on door-info events) and `runTriangleSnapshot` (every 3 ticks when `settings.timestampedChat` is on; off by default for current user). Takes a `region` param. Same pattern as the others.
 
 **Event-driven (low priority, mention for completeness):** `findDgMap` from solo-pin cascade, `captureEndDungeonTimer` (already paired with Phase 5's stage 2), Eyedrop, Run-layout-test, Calibrate Winterface.
 
 Tackle one target per commit so any regression is bisectable. See [NEXT.md](NEXT.md) for the active pickup task.
+
+### Outcome — Target 1 `readPartyPanel` (2026-04-30)
+
+**What landed** ([src/partyPanel.js](src/partyPanel.js)):
+- `readPartyPanel` self-bind path: resolve scan rect against `alt1.rsWidth/rsHeight` FIRST (constant, no bind needed), then `captureHold(rect.x0, rect.y0, w, h)` instead of `captureHoldFullRs()`. Synthesize an explicit `effectiveRegion` so downstream helpers don't fall back to `panelScanRect(screen)` with regional dims.
+- `screen.toData(0, 0, screen.width, screen.height)` → `screen.toData(screen.x, screen.y, screen.width, screen.height)`. Works identically for full-RS bind (screen.x=screen.y=0) and regional bind.
+- Threaded `(x0, y0) = (screen.x, screen.y)` through every helper that reads pixels: `hasNearBlackInterior`, `hasSlotColor`, `verifyPanelBgAtDetailed`, `scanSlotColorRowsAboveButton`, `findAllRedClustersInScanRect`, `ocrSlotName`, plus the dispatch helpers `detectByBgText`/`detectByRedCluster`.
+- Translation pattern at every read site: `screenData.getPixel(absX, absY)` → `screenData.getPixel(absX - x0, absY - y0)`. Bounds checks updated from `[0..screenData.width-1]` to `[x0..x0+screenData.width-1]` (same for Y). For `OCR.findReadLine`, translate the `(centerX, slotY)` args to local frame so OCR sees a self-consistent buffer.
+- Centroid sums in `findAllRedClustersInScanRect` and `scanSlotColorRowsAboveButton` continue to accumulate ABSOLUTE coords (the loop variables are absolute) so cluster.x/y and centerX outputs stay in absolute screen space — output contract unchanged.
+
+**Bug fix during ship:** `resolveScanRect` and `panelScanRect` ([src/partyPanel.js:115](src/partyPanel.js:115)) used `screen.width - 1` / `screen.height - 1` directly as absolute upper-bound clamps, which silently produced wrong absolute coords when called with a regional-bound screen (clamp range was the bind dims, not the absolute screen). Symptom on the user's first test: detection failed silently, door-info events MATCHed but couldn't self-pin (`cell=NULL cellPx=NULL triPx=NULL`); panel-bucket max collapsed to 15.7 ms because both detection paths bailed fast on garbage rects. Fixed both functions to use `screen.x + screen.width - 1` / `screen.y + screen.height - 1` for upper bounds and `screen.x || 0` / `screen.y || 0` for lower bounds. Full-RS bind (screen.x=0) → identity, no behaviour change.
+
+**CPU impact:**
+- Per-fire: bind cost dropped ~70% (28% of screen vs 100%). Per Phase 5/6 finding, `bindRegion` cost is region-proportional.
+- Empirical: panel-bucket max ~150-200 ms (pre-Phase-7 successful in-floor read) → 13.9 ms (post-Phase-7 verified). ~10-15× reduction in worst-case panel-bucket spike.
+- Steady-state: avg panel-bucket essentially unchanged (~0.2-0.3 ms/tick) because Phase 6's cheap-check cache absorbs normal play; `readPartyPanel` rarely fires once detection locks in. The win is concentrated on detection events (floor start, panel close-then-reopen, cache invalidation).
+
+**Iteration history:**
+1. Initial implementation translated all helpers but missed the `resolveScanRect` clamp issue. User Ctrl+R'd, tested mid-floor: detection silent-failed (no buttons found, no clusters in scan region). Diagnosed via the broken-state perf line (panel=0.5/15.7 — too low for normal OCR work, indicated fast-bail path).
+2. Traced root cause: `resolveScanRect` and `panelScanRect` used screen.width / screen.height as absolute clamps, which only works for full-RS bind. Synthesized `effectiveRegion` matching the bind exactly was being CLAMPED to bind-local dims by these functions, producing absolute coords that don't intersect with the actual bind region.
+3. Fixed by adding `screen.x || 0` and `screen.y || 0` offset awareness. User verified detection works, perf line confirmed 10-15× max reduction.
+
+**Touchpoints:** [src/partyPanel.js](src/partyPanel.js) — `readPartyPanel`, `panelScanRect`, `resolveScanRect`, plus all 8 helpers listed above.
+
+**Acceptance:** ✓ door-info events register with cell/cellPx/trianglePx fields populated; ✓ slot rows render correctly; ✓ banner stays clean during floor; ✓ panel-bucket max reduced empirically; ✓ calibration self-test path unaffected (full-RS bind there → identity translation).
 
 ---
 
@@ -367,3 +395,10 @@ When wrapping up a phase:
 Tracked here so they don't get lost, but explicitly out of scope for the CPU-reduction push:
 
 - **Calibration precision UX (hold-still detection).** Replace 3 s timer with cursor-stops-moving capture. May become unnecessary if CPU reduction makes the felt imprecision go away. Revisit only after Phase 4 verification.
+
+- **Cold-start detection latency.** After Ctrl+R + immediate floor entry, door-info events MATCH but fail to self-pin for up to ~10 s because three cold detections must align: RoK panel temporal-confirmation gate (3-6 s, [src/index.js:2464](src/index.js:2464)), dgMap state machine (3-6 s, [src/index.js:2725](src/index.js:2725)), and self-slot derivation (MULTI only). Open questions to sit with:
+    - Can the temporal-confirmation gate be skipped on the FIRST read of a fresh-load session, since the world-fluke false-positive risk is lower in the first few seconds of a fresh JS state?
+    - Worth persisting `_panelStableOrigin` across Ctrl+R via localStorage, so the cheap-check fast-path warms up immediately?
+    - Or is the right move to fire an immediate one-shot detection at floor-start instead of waiting for cadence alignment?
+    - Does the dgMap state machine have an equivalent fast-track? Are its cadences load-bearing for any other invariant?
+  Answer these before designing a fix — the gate exists for good reason (see HANDOFF / Phase 3 outcome) and any fast-track has to preserve world-fluke protection.

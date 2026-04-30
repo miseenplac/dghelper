@@ -113,11 +113,20 @@ const PANEL_BG_STRIP_HALF_W = 70;
 // ~5-8× cheaper and eliminates false-positive matches against similarly-
 // coloured UI elsewhere (inventory BG, action-bar icons, world pixels).
 function panelScanRect(screen) {
+  // Absolute-coord bounds. For full-RS bind / dims-only object: screen.x/y
+  // are 0 (or absent → coerced to 0), so origins/widths/heights are
+  // identical to the pre-Phase-7 math. For regional bind: screen.x/y carry
+  // the bind's absolute origin and these fractions effectively place the
+  // default rect inside the bind (this fallback is not reached on the
+  // Phase 7 path because readPartyPanel always synthesizes an explicit
+  // region — kept defensive for external callers).
+  const sxLo = screen.x || 0;
+  const syLo = screen.y || 0;
   return {
-    x0: Math.floor(screen.width * 0.60),
-    x1: screen.width - 1,
-    y0: Math.floor(screen.height * 0.15),
-    y1: Math.floor(screen.height * 0.85),
+    x0: sxLo + Math.floor(screen.width * 0.60),
+    x1: sxLo + screen.width - 1,
+    y0: syLo + Math.floor(screen.height * 0.15),
+    y1: syLo + Math.floor(screen.height * 0.85),
   };
 }
 
@@ -127,14 +136,27 @@ function panelScanRect(screen) {
  * regions silently fall back to default.
  */
 function resolveScanRect(screen, region) {
+  // Absolute-coord bounds for clamping. Full-RS bind / pre-bind dims
+  // object: screen.x/y default to 0 → bounds are [0..screen.width-1] ×
+  // [0..screen.height-1] (pre-Phase-7 behaviour). Regional bind:
+  // screen.x/y are the bind origin → bounds are [screen.x..screen.x+
+  // screen.width-1] × [screen.y..screen.y+screen.height-1], i.e. the
+  // bound region in absolute coords. Pre-Phase-7 this used screen.width-1
+  // / screen.height-1 directly, which silently clamped a calibrated
+  // region to the wrong absolute bounds when a regional screen was
+  // passed in.
+  const sxLo = screen.x || 0;
+  const syLo = screen.y || 0;
+  const sxHi = sxLo + screen.width - 1;
+  const syHi = syLo + screen.height - 1;
   if (region &&
       Number.isFinite(region.x) && Number.isFinite(region.y) &&
       Number.isFinite(region.w) && Number.isFinite(region.h) &&
       region.w > 0 && region.h > 0) {
-    const x0 = Math.max(0, Math.floor(region.x));
-    const y0 = Math.max(0, Math.floor(region.y));
-    const x1 = Math.min(screen.width - 1, x0 + Math.floor(region.w));
-    const y1 = Math.min(screen.height - 1, y0 + Math.floor(region.h));
+    const x0 = Math.max(sxLo, Math.floor(region.x));
+    const y0 = Math.max(syLo, Math.floor(region.y));
+    const x1 = Math.min(sxHi, x0 + Math.floor(region.w));
+    const y1 = Math.min(syHi, y0 + Math.floor(region.h));
     if (x1 > x0 && y1 > y0) return { x0, x1, y0, y1 };
   }
   return panelScanRect(screen);
@@ -243,15 +265,20 @@ export function classifySlotColor(r, g, b) {
  * decoration supplies the outline but lacks the text interior, so the
  * combined check correctly reports the slot as empty.
  */
-function hasNearBlackInterior(screenData, centreX, centreY, minCount = 3) {
-  const xMin = Math.max(0, centreX - SLOT_CONTENT_HALF_W);
-  const xMax = Math.min(screenData.width - 1, centreX + SLOT_CONTENT_HALF_W);
-  const yMin = Math.max(0, centreY - SLOT_CONTENT_HALF_H);
-  const yMax = Math.min(screenData.height - 1, centreY + SLOT_CONTENT_HALF_H);
+function hasNearBlackInterior(screenData, centreX, centreY, minCount, x0, y0) {
+  // (centreX, centreY) are absolute screen coords. With Phase 7 regional
+  // bind, screenData spans only [x0..x0+screenData.width) × [y0..y0+
+  // screenData.height) in absolute coords. Clamp absolute-coord bounds
+  // accordingly, then subtract (x0, y0) at getPixel to index the buffer.
+  if (minCount === undefined) minCount = 3;
+  const xMin = Math.max(x0, centreX - SLOT_CONTENT_HALF_W);
+  const xMax = Math.min(x0 + screenData.width - 1, centreX + SLOT_CONTENT_HALF_W);
+  const yMin = Math.max(y0, centreY - SLOT_CONTENT_HALF_H);
+  const yMax = Math.min(y0 + screenData.height - 1, centreY + SLOT_CONTENT_HALF_H);
   let count = 0;
   for (let y = yMin; y <= yMax; y++) {
     for (let x = xMin; x <= xMax; x++) {
-      const px = screenData.getPixel(x, y);
+      const px = screenData.getPixel(x - x0, y - y0);
       if (!px) continue;
       if (px[0] < 12 && px[1] < 12 && px[2] < 12) {
         count++;
@@ -270,15 +297,17 @@ function hasNearBlackInterior(screenData, centreX, centreY, minCount = 3) {
  * by looking wide enough to catch both groups regardless of which one
  * the peek's weighted centroid landed between.
  */
-function hasSlotColor(screenData, centreX, centreY, expectedColor, minCount = 3) {
-  const xMin = Math.max(0, centreX - SLOT_CONTENT_HALF_W);
-  const xMax = Math.min(screenData.width - 1, centreX + SLOT_CONTENT_HALF_W);
-  const yMin = Math.max(0, centreY - SLOT_CONTENT_HALF_H);
-  const yMax = Math.min(screenData.height - 1, centreY + SLOT_CONTENT_HALF_H);
+function hasSlotColor(screenData, centreX, centreY, expectedColor, minCount, x0, y0) {
+  // Absolute→local translation pattern — see hasNearBlackInterior.
+  if (minCount === undefined) minCount = 3;
+  const xMin = Math.max(x0, centreX - SLOT_CONTENT_HALF_W);
+  const xMax = Math.min(x0 + screenData.width - 1, centreX + SLOT_CONTENT_HALF_W);
+  const yMin = Math.max(y0, centreY - SLOT_CONTENT_HALF_H);
+  const yMax = Math.min(y0 + screenData.height - 1, centreY + SLOT_CONTENT_HALF_H);
   let count = 0;
   for (let y = yMin; y <= yMax; y++) {
     for (let x = xMin; x <= xMax; x++) {
-      const px = screenData.getPixel(x, y);
+      const px = screenData.getPixel(x - x0, y - y0);
       if (!px) continue;
       if (classifySlotColor(px[0], px[1], px[2]) === expectedColor) {
         count++;
@@ -298,14 +327,15 @@ function hasSlotColor(screenData, centreX, centreY, expectedColor, minCount = 3)
  * real slot rows clear 50-70 % BG easily; unrelated UI rows typically
  * fall well under 35 %.
  */
-function verifyPanelBgAtDetailed(screenData, absX, absY) {
+function verifyPanelBgAtDetailed(screenData, absX, absY, x0, y0) {
   let bgHits = 0, total = 0;
   for (let dx = -PANEL_BG_STRIP_HALF_W; dx <= PANEL_BG_STRIP_HALF_W; dx += 4) {
     for (let dy = -1; dy <= 1; dy++) {
       const x = absX + dx;
       const y = absY + dy;
-      if (x < 0 || y < 0 || x >= screenData.width || y >= screenData.height) continue;
-      const px = screenData.getPixel(x, y);
+      // Bounds check in absolute coords — buffer spans [x0..x0+w) × [y0..y0+h).
+      if (x < x0 || y < y0 || x >= x0 + screenData.width || y >= y0 + screenData.height) continue;
+      const px = screenData.getPixel(x - x0, y - y0);
       if (!px) continue;
       total++;
       if (isPanelBackgroundLoose(px[0], px[1], px[2])) bgHits++;
@@ -413,29 +443,34 @@ const SLOT_Y_MERGE_GAP = 2;
  * Returns [{ y, color, count, centerX }, ...] sorted top-to-bottom.
  * Adjacent same-colour buckets are merged into a single row.
  */
-function scanSlotColorRowsAboveButton(screenData, button, region) {
+function scanSlotColorRowsAboveButton(screenData, button, region, x0, y0) {
   // Clamp Y range to calibrated region when available — scan must not
-  // reach outside the panel the user told us to look in.
-  const regionYMin = (region && Number.isFinite(region.y)) ? Math.max(0, Math.floor(region.y)) : 0;
+  // reach outside the panel the user told us to look in. Lower-bound
+  // defaults (when no region is supplied) are the bind region's top-
+  // left in absolute coords (x0, y0); upper-bound defaults are
+  // (x0 + screenData.width - 1, y0 + screenData.height - 1).
+  const regionYMin = (region && Number.isFinite(region.y)) ? Math.max(y0, Math.floor(region.y)) : y0;
   const regionYMax = (region && Number.isFinite(region.y) && Number.isFinite(region.h))
-    ? Math.min(screenData.height - 1, Math.floor(region.y) + Math.floor(region.h))
-    : screenData.height - 1;
+    ? Math.min(y0 + screenData.height - 1, Math.floor(region.y) + Math.floor(region.h))
+    : y0 + screenData.height - 1;
   const yStart = Math.max(regionYMin, button.y - SLOT_SCAN_MAX_OFFSET);
-  const yEnd = Math.min(regionYMax, Math.max(0, button.y - SLOT_SCAN_MIN_OFFSET));
+  const yEnd = Math.min(regionYMax, Math.max(y0, button.y - SLOT_SCAN_MIN_OFFSET));
   // Same clamping on X so the horizontal search doesn't leak sideways
   // out of the calibration box either.
-  const regionXMin = (region && Number.isFinite(region.x)) ? Math.max(0, Math.floor(region.x)) : 0;
+  const regionXMin = (region && Number.isFinite(region.x)) ? Math.max(x0, Math.floor(region.x)) : x0;
   const regionXMax = (region && Number.isFinite(region.x) && Number.isFinite(region.w))
-    ? Math.min(screenData.width - 1, Math.floor(region.x) + Math.floor(region.w))
-    : screenData.width - 1;
+    ? Math.min(x0 + screenData.width - 1, Math.floor(region.x) + Math.floor(region.w))
+    : x0 + screenData.width - 1;
   const xStart = Math.max(regionXMin, button.x - SLOT_SCAN_HALF_W);
   const xEnd = Math.min(regionXMax, button.x + SLOT_SCAN_HALF_W);
 
   // Bucket hits by Y, accumulating per-colour counts and X-sum for centroid.
+  // sumX accumulates ABSOLUTE X (the x in the loop is absolute) so the
+  // emitted centerX downstream stays in absolute coords as before.
   const byY = new Map();
   for (let y = yStart; y <= yEnd; y += SLOT_SCAN_STEP) {
     for (let x = xStart; x <= xEnd; x += SLOT_SCAN_STEP) {
-      const px = screenData.getPixel(x, y);
+      const px = screenData.getPixel(x - x0, y - y0);
       if (!px) continue;
       const c = classifySlotColor(px[0], px[1], px[2]);
       if (!c) continue;
@@ -586,11 +621,15 @@ const SLOT_TEXT_PALETTES = {
  *   - normalise whitespace
  * A single `'` or `.` is preserved (e.g., "D'arby", "St. John").
  */
-function ocrSlotName(screenData, centerX, slotY, slotColor) {
+function ocrSlotName(screenData, centerX, slotY, slotColor, x0, y0) {
   const palette = SLOT_TEXT_PALETTES[slotColor];
   if (!palette || !palette.length) return null;
   try {
-    const res = OCR.findReadLine(screenData, font_chatbox_12pt, palette, centerX, slotY);
+    // OCR.findReadLine operates in local-buffer coords (its bounds-check
+    // and pixel index both use buf.width — see node_modules/alt1/src/
+    // ocr/index.ts:256, 264). Translate centerX/slotY from absolute to
+    // local so OCR sees a self-consistent local frame.
+    const res = OCR.findReadLine(screenData, font_chatbox_12pt, palette, centerX - x0, slotY - y0);
     if (res && typeof res.text === 'string') {
       const cleaned = res.text
         .replace(/^[\s.'"]+|[\s.'"]+$/g, '')
@@ -611,7 +650,12 @@ function ocrSlotName(screenData, centerX, slotY, slotColor) {
  * `origin.pitch` reflects the self-calibrated pitch measured from the
  * gaps between detected rows (defaults to ROW_PITCH_PX for solo).
  */
-function detectByBgText(screenData, screen, region) {
+function detectByBgText(screenData, screen, region, x0, y0) {
+  // x0, y0 = bind region's top-left in absolute screen coords. Threaded
+  // through to helpers for absolute→local translation. peekForPartyButton
+  // is local-coord-clean internally (does its own toData(x0, y0, w, h)
+  // and iterates the resulting buffer in local coords) so it doesn't
+  // need the threading.
   const buttons = peekForPartyButton(screen, region);
   if (!buttons.length) {
     return { found: false, reason: 'bg-text:no-buttons', detectionMethod: 'bg-text' };
@@ -625,7 +669,7 @@ function detectByBgText(screenData, screen, region) {
   let best = null;
   const tried = [];
   for (const btn of buttons) {
-    const rows = scanSlotColorRowsAboveButton(screenData, btn, region);
+    const rows = scanSlotColorRowsAboveButton(screenData, btn, region, x0, y0);
     const tryInfo = {
       bx: btn.x, by: btn.y, bhits: btn.hits,
       rowsFound: rows.length,
@@ -730,7 +774,7 @@ function detectByBgText(screenData, screen, region) {
     const slotY = best.slot1Y + i * best.pitch;
     const row = best.rows.find(r => Math.abs(r.y - slotY) <= Math.max(4, Math.floor(best.pitch / 3)));
     const cx = row ? row.centerX : best.centerX;
-    s.name = ocrSlotName(screenData, cx, slotY, s.color);
+    s.name = ocrSlotName(screenData, cx, slotY, s.color, x0, y0);
   }
 
   return {
@@ -763,8 +807,10 @@ function detectByBgText(screenData, screen, region) {
  * (b) the red isn't being classified at all, or (c) the panel simply
  * isn't visible.
  */
-export function findAllRedClustersInScanRect(screenData, screen, topK = 8, region = null) {
+export function findAllRedClustersInScanRect(screenData, screen, topK = 8, region = null, bindX0 = 0, bindY0 = 0) {
   if (!screen) return [];
+  // Scan-rect bounds (absolute screen coords) — what region the iteration
+  // should cover.
   const { x0, y0, x1, y1 } = resolveScanRect(screen, region);
   const w = x1 - x0;
   const h = y1 - y0;
@@ -774,9 +820,15 @@ export function findAllRedClustersInScanRect(screenData, screen, topK = 8, regio
   const buckets = new Map();
   const STEP = 2;
 
+  // bindX0/bindY0 are the bind region's top-left in absolute coords. For
+  // full-RS bind both are 0 (translation is identity). For Phase 7
+  // regional bind, subtract from absolute (x, y) at getPixel to index
+  // the smaller buffer. Centroid sums (sumX, sumY) accumulate ABSOLUTE
+  // coords so cluster.x/y stay in absolute screen space — output
+  // contract unchanged.
   for (let y = y0; y < y1; y += STEP) {
     for (let x = x0; x < x1; x += STEP) {
-      const px = screenData.getPixel(x, y);
+      const px = screenData.getPixel(x - bindX0, y - bindY0);
       if (!px) continue;
       if (classifySlotColor(px[0], px[1], px[2]) !== 'red') continue;
       const b = Math.floor(y / Y_BUCKET);
@@ -927,22 +979,50 @@ export function readPartyPanel({ screen: providedScreen, region } = {}) {
   if (!window.alt1) return { found: false, reason: 'not-in-alt1' };
 
   let screen = providedScreen;
+  let effectiveRegion = region;
   if (!screen) {
-    try { screen = a1lib.captureHoldFullRs(); }
+    // Phase 7 Target 1: regional bind. Resolve scan rect against full-RS
+    // dims FIRST (alt1.rsWidth/rsHeight — constant, no bind needed), then
+    // captureHold only that region. Drops pixel-data per fire from ~100%
+    // of screen to ~28% (default panelScanRect = right 40% × middle 70%).
+    // bindRegion cost is region-proportional (Phase 5/6 finding) so this
+    // is a real CPU win.
+    const dims = { width: alt1.rsWidth, height: alt1.rsHeight };
+    const rect = resolveScanRect(dims, region);
+    const w = rect.x1 - rect.x0;
+    const h = rect.y1 - rect.y0;
+    try { screen = a1lib.captureHold(rect.x0, rect.y0, w, h); }
     catch (_) { return { found: false, reason: 'capture-threw' }; }
     if (!screen) return { found: false, reason: 'capture-null' };
+    // Synthesize an explicit region so downstream helpers don't fall
+    // back to panelScanRect(screen) — that fraction math would compute
+    // sub-fractions of the regional bind's width/height, not full-RS.
+    if (!effectiveRegion) {
+      effectiveRegion = { x: rect.x0, y: rect.y0, w, h };
+    }
   }
 
   let screenData;
-  try { screenData = screen.toData(0, 0, screen.width, screen.height); }
+  // toData uses absolute coords (subtracts bind's x/y internally — see
+  // node_modules/alt1/src/base/imgref.ts:31). Calling with screen.x/y
+  // returns the full bound region. Works identically for full-RS bind
+  // (screen.x=screen.y=0) and regional bind (screen.x/y = rect origin).
+  try { screenData = screen.toData(screen.x, screen.y, screen.width, screen.height); }
   catch (_) { return { found: false, reason: 'toData-threw' }; }
 
+  // Bind offset for absolute→local coord translation in the helpers.
+  // Full-RS bind: x0=y0=0, translation is identity, all math unchanged.
+  // Regional bind: x0/y0 = rect origin, helpers subtract from absolute
+  // coords to index into the smaller buffer correctly.
+  const x0 = screen.x;
+  const y0 = screen.y;
+
   // Primary path (user-calibrated region if provided, else default scan rect).
-  const primary = detectByBgText(screenData, screen, region);
+  const primary = detectByBgText(screenData, screen, effectiveRegion, x0, y0);
   if (primary.found) return primary;
 
   // Fallback to legacy red-cluster detection.
-  const fallback = detectByRedCluster(screenData, screen, region);
+  const fallback = detectByRedCluster(screenData, screen, effectiveRegion, x0, y0);
   if (fallback.found) {
     fallback.detectionMethod = 'red-cluster';
     fallback.primaryReason = primary.reason;
@@ -963,10 +1043,13 @@ export function readPartyPanel({ screen: providedScreen, region } = {}) {
   };
 }
 
-function detectByRedCluster(screenData, screen, region) {
+function detectByRedCluster(screenData, screen, region, x0, y0) {
+  // x0, y0 = bind region's top-left in absolute screen coords. Threaded
+  // to helpers for absolute→local translation (full-RS bind: 0/0 →
+  // identity; regional bind: rect origin).
   // Stage 1: find all red clusters in the scan region, ranked by hit count.
   // The strongest cluster is our primary slot-1 candidate.
-  const redClusters = findAllRedClustersInScanRect(screenData, screen, 12, region);
+  const redClusters = findAllRedClustersInScanRect(screenData, screen, 12, region, x0, y0);
   if (!redClusters.length) {
     return { found: false, reason: 'no-red' };
   }
@@ -1009,7 +1092,7 @@ function detectByRedCluster(screenData, screen, region) {
     // tightening, the 80 px width gate filtered these implicitly.
     // Checking here instead of per-slot keeps the expensive multi-slot
     // BG verify from running on obvious non-panel clusters.
-    if (!hasNearBlackInterior(screenData, cluster.x, cluster.y)) {
+    if (!hasNearBlackInterior(screenData, cluster.x, cluster.y, undefined, x0, y0)) {
       candidatesTried.push({
         x: cluster.x, y: cluster.y, hits: cluster.hits,
         width: cluster.width,
@@ -1023,8 +1106,9 @@ function detectByRedCluster(screenData, screen, region) {
     let anchorBgRatio = 0;
     for (let i = 0; i < SLOTS_PER_PANEL; i++) {
       const rowY = cluster.y + i * ROW_PITCH_PX;
-      if (rowY >= screenData.height - 2) break;
-      const check = verifyPanelBgAtDetailed(screenData, cluster.x, rowY);
+      // Bounds check in absolute Y — buffer spans [y0..y0+h).
+      if (rowY >= y0 + screenData.height - 2) break;
+      const check = verifyPanelBgAtDetailed(screenData, cluster.x, rowY, x0, y0);
       if (check.verified) multiSlot++;
       if (i === 0) anchorBgRatio = check.bgRatio;
     }
@@ -1047,7 +1131,8 @@ function detectByRedCluster(screenData, screen, region) {
     for (let i = 0; i < SLOTS_PER_PANEL; i++) {
       const expected = SLOT_COLOR_BY_INDEX[i];
       const slotY = cluster.y + i * ROW_PITCH_PX;
-      if (slotY >= screenData.height - 2) {
+      // Bounds check in absolute Y — buffer spans [y0..y0+h).
+      if (slotY >= y0 + screenData.height - 2) {
         slots.push({ index: i, filled: false, color: expected });
         continue;
       }
@@ -1058,9 +1143,9 @@ function detectByRedCluster(screenData, screen, region) {
       //       colour presence (≥10 hits) to distinguish a name from a
       //       decoration icon that would only contribute a few colour pixels.
       const filled =
-        hasSlotColor(screenData, cluster.x, slotY, expected, 10) ||
-        (hasSlotColor(screenData, cluster.x, slotY, expected) &&
-         hasNearBlackInterior(screenData, cluster.x, slotY));
+        hasSlotColor(screenData, cluster.x, slotY, expected, 10, x0, y0) ||
+        (hasSlotColor(screenData, cluster.x, slotY, expected, undefined, x0, y0) &&
+         hasNearBlackInterior(screenData, cluster.x, slotY, undefined, x0, y0));
       slots.push({ index: i, filled, color: expected });
     }
 
