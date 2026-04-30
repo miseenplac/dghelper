@@ -196,7 +196,7 @@ function setAlias(signature, name) {
 // ---- Calibration ---------------------------------------------------------
 // User-defined scan regions for the user-positioned UI elements: party
 // interface and DG map widget. Captured via a two-hover flow (TL corner →
-// 3s countdown → capture; BR corner → 3s countdown → capture), persisted
+// 5s countdown → capture; BR corner → 5s countdown → capture), persisted
 // to localStorage. When present, these regions REPLACE the default auto-
 // scan rectangles — the plugin scans only inside them.
 //
@@ -930,7 +930,7 @@ function updateRokWarning() {
 
 // ---- Calibration UI ------------------------------------------------------
 // Two-hover capture flow: user clicks Calibrate → UI prompts for TL hover
-// (3s countdown, captures mousePosition at end), then BR hover (same),
+// (5s countdown, captures mousePosition at end), then BR hover (same),
 // then commits {x, y, w, h} to calibration[metric]. Mirrors the Eyedrop
 // button pattern — proven to work inside Alt1's CEF.
 //
@@ -968,6 +968,15 @@ let _chatLastSeenAt = 0;
 let _winterfaceLastDetectedAt = 0;
 
 function renderCalibrationStatus() {
+  // Skip while a calibration capture is in progress. captureMouseAfterDelay
+  // is updating the metric's status element every 150 ms with countdown
+  // text ("Hover TOP-LEFT — 3s") and our 1 s setInterval would otherwise
+  // overwrite it with the static "✓ (x,y) wxh" / "⚠ not calibrated" text,
+  // making the countdown flash visibly each second. runCalibrationForMetric
+  // calls renderCalibrationStatus() explicitly in its finally and on
+  // not-found paths, so the status is correctly rendered after capture.
+  if (_calActive) return;
+
   // User-calibratable REGION metrics (party panel + DG map): a
   // {x, y, w, h} rectangle is stored in calibration[key] when set.
   for (const m of CAL_METRICS) {
@@ -1038,16 +1047,27 @@ function renderCalibrationStatus() {
     }
   }
 }
+// True while a calibration capture is in progress. Triple role:
+//   1. Prevents Calibrate buttons from being re-entered mid-countdown.
+//   2. Gates tick() heavy work via an early-return so the countdown UI
+//      gets a free event loop on slow CPUs.
+//   3. Gates renderCalibrationStatus so the 1 s setInterval below doesn't
+//      clobber the countdown text mid-capture (without this, the static
+//      "✓ (x,y) wxh" / "⚠ not calibrated" text flashes through every 1 s).
+// MUST be declared BEFORE renderCalibrationStatus's first synchronous
+// call below — the function reads _calActive on entry and a TDZ access
+// would throw at module-eval, halting init. See HANDOFF invariant #11
+// for the same footgun pattern with _lastPartyPanelDetectedAt.
+let _calActive = false;
+
 renderCalibrationStatus();
 
 // Re-render calibration status every second so chat's ✓/⚠ flips on
 // freshness expiry without waiting for a manual refresh. 1 s cadence
 // is imperceptible on CPU (pure DOM text writes against ~5 elements).
+// renderCalibrationStatus's own _calActive guard ensures this interval
+// is a no-op while a calibration capture is in progress.
 setInterval(renderCalibrationStatus, 1000);
-
-// One active capture at a time; prevents buttons from being re-entered
-// mid-countdown.
-let _calActive = false;
 
 /**
  * Countdown + capture mousePosition. Resolves to { x, y } on success, or
@@ -1060,16 +1080,21 @@ function captureMouseAfterDelay(label, delayMs, statusEl) {
     const start = Date.now();
     const tick = () => {
       const rem = Math.max(0, delayMs - (Date.now() - start));
+      // Time-up check FIRST so we don't write a "— 0s" frame to the
+      // status element on the final tick. The last visible countdown
+      // value is "1s", then capture fires and runCalibrationForMetric
+      // updates the label to the next stage (or to renderCalibrationStatus
+      // on completion).
+      if (rem <= 0) {
+        const pos = readMousePosition();
+        resolve(pos || null);
+        return;
+      }
       const secs = Math.ceil(rem / 1000);
       if (statusEl) {
         statusEl.textContent = `${label} — ${secs}s`;
         statusEl.classList.add('active');
         statusEl.classList.remove('set');
-      }
-      if (rem <= 0) {
-        const pos = readMousePosition();
-        resolve(pos || null);
-        return;
       }
       setTimeout(tick, 150);
     };
@@ -1090,14 +1115,14 @@ async function runCalibrationForMetric(meta) {
 
   try {
     const p1 = await captureMouseAfterDelay(
-      `Hover TOP-LEFT of ${meta.label}`, 3000, statusEl);
+      `Hover TOP-LEFT of ${meta.label}`, 5000, statusEl);
     if (!p1) {
       dbg('error', `Calibration (${meta.label}): mouse not over RS window at TL capture. Aborted.`);
       renderCalibrationStatus();
       return;
     }
     const p2 = await captureMouseAfterDelay(
-      `Hover BOTTOM-RIGHT of ${meta.label}`, 3000, statusEl);
+      `Hover BOTTOM-RIGHT of ${meta.label}`, 5000, statusEl);
     if (!p2) {
       dbg('error', `Calibration (${meta.label}): mouse not over RS window at BR capture. Aborted.`);
       renderCalibrationStatus();
@@ -2723,6 +2748,12 @@ function tick() {
     dbg('info', 'permissionPixel=false — trying capture anyway');
     warnedNoPixel = true;
   }
+
+  // While a calibration capture is open, skip all heavy work (chat OCR /
+  // panel scan / dg map scan / overlay redraws) so the countdown UI gets
+  // an unblocked event loop on slow CPUs. tickCount + the metronome above
+  // keep running so the user still sees a live heartbeat in debug stats.
+  if (_calActive) return;
 
   if (!reader) {
     setupReader();
