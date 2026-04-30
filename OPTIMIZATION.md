@@ -25,9 +25,15 @@ If a change adds CPU cost, justify explicitly. If it reduces, note by how much (
 
 This principle is broader than the OPTIMIZATION project's phases — it's the lens for every PR/commit going forward.
 
+## Project status
+
+**CONCLUDED 2026-04-30.** All seven planned phases shipped and verified on the user's machine. Phase 4 (slow-CPU tester verification) remains in tester hands as the final feedback loop — non-blocking. Chat OCR was investigated as the dominant remaining culprit and explicitly shelved with the framework written up in the Deferred section so a future agent doesn't re-explore cold.
+
+If a tester reports Phase 7 is still felt-laggy on slow CPUs, the next attack is chat OCR delta-hash — see Deferred section for the full plan.
+
 ## Phase status (quick view)
 
-Intentionally vague at this point — these will sharpen as we learn. Each phase has its own detailed status line below; keep both in sync when updating.
+Each phase has its own detailed status line below; keep both in sync when updating.
 
 - **Phase 1 — Calibration smoothness** — VERIFIED & SHIPPED 2026-04-29. Heavy-work pause + clobber guard + countdown UX polish (5 s timer, skip-0s frame).
 - **Phase 2 — Profiling instrumentation** — VERIFIED 2026-04-30. Lightweight always-on perf line in debug log, once per minute. Confirmed emitting clean lines on user's machine; first data point flagged chat OCR (`reader.read()`) as the dominant CPU consumer.
@@ -459,6 +465,16 @@ When wrapping up a phase:
 Tracked here so they don't get lost, but explicitly out of scope for the CPU-reduction push:
 
 - **Calibration precision UX (hold-still detection).** Replace 3 s timer with cursor-stops-moving capture. May become unnecessary if CPU reduction makes the felt imprecision go away. Revisit only after Phase 4 verification.
+
+- **Chat OCR (`reader.read()`).** Dominant remaining CPU consumer per Phase 2 baseline — typically ~175-270 ms avg / ~1100-1500 ms max in the `chatRead` bucket, ~85% of total tick CPU. Investigated 2026-04-30 and explicitly **shelved** with the project conclusion. The findings worth preserving so a future revisit doesn't re-explore cold:
+    - **What `reader.read()` actually does** ([alt1 chatbox source](node_modules/alt1/src/chatbox/index.ts:238)): every call captures the chatbox region and OCRs every visible line. alt1's built-in `diffRead` flag (defaults to true) diffs at the OCR-output level — it OCRs everything then compares to the previous batch's `overlaplines` to filter already-seen lines. The expensive OCR work runs no matter what; alt1's diff doesn't save it.
+    - **The `read(img?)` signature accepts an optional pre-captured ImgRef** — that's the hook a delta-hash optimization would use: capture chatbox region ourselves, hash, conditionally pass the ImgRef into `read()` only when the hash changed. Latency stays at one tick (no cadence change) so the latency requirements below are preserved.
+    - **Cadence reduction (10 Hz → 2-5 Hz) is OFF the table.** The 10 Hz master tick at [src/index.js:3711](src/index.js:3711) is load-bearing for two functional reasons: (1) **key callout latency** — chat line → OCR → callout cue must fire within ~100 ms of the in-game event for the audio/visual prompt pattern to feel responsive; (2) **map pin accuracy** — door-info events pin via `dgMap` state at the OCR-resolve moment, so chat-OCR cadence has to be tight relative to player-cell-movement rate or pins land on the wrong cell. Drop to 2 Hz adds 400+ ms latency on the first axis and widens the cell-movement race window on the second.
+    - **Pixel-delta-hash is viable IFF the user has chat backdrop set to opaque.** Transparent chat backdrop (RS3 default in some setups) causes world pixels to bleed through the chatbox region; world animations (character movement, NPC wandering) constantly invalidate the hash → zero savings, slight overhead. Opaque chat backdrop → hash is stable when chat is idle → savings track real chat idle time (most of the time, even during dungeon runs).
+    - **Two fallback hash schemes for the transparent-chat case** if delta-hash is later pursued without forcing users to flip opacity:
+        - **Color-aware hash:** scan the chatbox region for "chat-palette" pixel COUNTS (white text, blue timestamps, gold loot — the OCR's existing color list) and hash that count vector. World-bleed pixels mostly don't match the chat palette, so they don't perturb the count. Robust but more work to implement.
+        - **Sample-grid hash:** hash only N fixed sample points at known text-row baselines (~20-50 points, sub-microsecond). World bleed at random positions averages out across N samples; line scrolls move palette pixels through specific positions deterministically. Cheaper but less rigorous than color-aware.
+    - **Why shelved:** the current `chatRead` cost, while dominant, is empirically tolerable on the user's machine after Phases 1-7. Slow-CPU tester verification (Phase 4) is the gating data point; if testers report Phase 7 is "good enough" it stays shelved, and if they don't, this is the obvious next attack with the framework above already mapped out. No code change needed today.
 
 - **Cold-start detection latency.** After Ctrl+R + immediate floor entry, door-info events MATCH but fail to self-pin for up to ~10 s because three cold detections must align: RoK panel temporal-confirmation gate (3-6 s, [src/index.js:2464](src/index.js:2464)), dgMap state machine (3-6 s, [src/index.js:2725](src/index.js:2725)), and self-slot derivation (MULTI only). Open questions to sit with:
     - Can the temporal-confirmation gate be skipped on the FIRST read of a fresh-load session, since the world-fluke false-positive risk is lower in the first few seconds of a fresh JS state?
