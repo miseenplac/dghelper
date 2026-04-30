@@ -991,30 +991,46 @@ export function findTrianglePx({ screen: providedScreen, region, color = 'red' }
 
   let screen = providedScreen;
   if (!screen) {
-    try { screen = a1lib.captureHoldFullRs(); }
+    // Phase 7 Target 3: regional self-bind. region is required (we
+    // returned null above if absent), so it's always available as the
+    // bind rect. Drops bind cost from full-RS to calibration.dgMap-
+    // sized; bindRegion cost is region-proportional per Phase 5/6.
+    try { screen = a1lib.captureHold(region.x, region.y, region.w, region.h); }
     catch (_) { return null; }
     if (!screen) return null;
   }
 
   let screenData;
-  try { screenData = screen.toData(0, 0, screen.width, screen.height); }
+  // toData with screen.x/y returns the full bound region. Identical for
+  // full-RS providedScreen (screen.x=screen.y=0) and regional self-bind.
+  try { screenData = screen.toData(screen.x, screen.y, screen.width, screen.height); }
   catch (_) { return null; }
 
-  const x0 = Math.max(0, Math.floor(region.x));
-  const y0 = Math.max(0, Math.floor(region.y));
-  const xMax = Math.min(screenData.width - 1, x0 + Math.floor(region.w));
-  const yMax = Math.min(screenData.height - 1, y0 + Math.floor(region.h));
+  // Bind offset for absolute→local translation at getPixel.
+  const bx0 = screen.x;
+  const by0 = screen.y;
+
+  // Scan-rect bounds (in absolute screen coords) — clamped to the bind's
+  // absolute extent. Renamed from the earlier local `x0/y0` to `rx0/ry0`
+  // so they don't collide with the bind-offset variables.
+  const rx0 = Math.max(bx0, Math.floor(region.x));
+  const ry0 = Math.max(by0, Math.floor(region.y));
+  const xMax = Math.min(bx0 + screenData.width - 1, rx0 + Math.floor(region.w));
+  const yMax = Math.min(by0 + screenData.height - 1, ry0 + Math.floor(region.h));
 
   // STEP=2 matches classifyCellContents's sampling density, so expected
   // hit counts are comparable (triangle ≈ 5-10 hits in practice).
   // TRIANGLE_MIN_PIXELS floor stays consistent with the per-cell check.
   const STEP = 2;
   let sumX = 0, sumY = 0, count = 0;
-  for (let y = y0; y < yMax; y += STEP) {
-    for (let x = x0; x < xMax; x += STEP) {
-      const px = screenData.getPixel(x, y);
+  for (let y = ry0; y < yMax; y += STEP) {
+    for (let x = rx0; x < xMax; x += STEP) {
+      const px = screenData.getPixel(x - bx0, y - by0);
       if (!px) continue;
       if (classifyTrianglePixel(px[0], px[1], px[2]) === color) {
+        // sumX/sumY accumulate ABSOLUTE coords (loop variables are
+        // absolute) so the returned centroid stays in absolute screen
+        // space — output contract unchanged.
         sumX += x;
         sumY += y;
         count++;

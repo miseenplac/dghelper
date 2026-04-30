@@ -35,7 +35,7 @@ Intentionally vague at this point — these will sharpen as we learn. Each phase
 - **Phase 4 — Slow-CPU verification** — READY. Push to main + ask original slow-CPU testers to retest.
 - **Phase 5 — Winterface auto-probe reduction** — VERIFIED 2026-04-30. Active-floor gate + two-stage capture (cheap region bind for peek, full bind only on confirmed peek hit). User-confirmed felt-instant winterface registration on test deploy.
 - **Phase 6 — `cheapPanelStillPresent` regional bind + verification cadence decoupling** — VERIFIED 2026-04-30. Part 1: regional bind in `cheapPanelStillPresent` (full-RS bind for a 30×3 read → captureHold of just the 30×3 region). Part 2: dual-cadence design — per-tick "trust" bump + verification only every ~10 s. Side-eliminates RS3 panel-flicker false absences. User-confirmed clean across multi-floor runs with panel open.
-- **Phase 7 — Remaining periodic full-screen captures.** IN PROGRESS. Target 1 (`readPartyPanel`) VERIFIED 2026-04-30. Target 2 (`runDgMapRead` + dgMap.js helpers) VERIFIED 2026-04-30 — same regional-bind pattern, dgmap-bucket avg dropped ~11× (5.5 → 0.5 ms) and max ~10× (~165 → 16.8 ms). Per-fire cost ~165 ms → ~15 ms. Bigger steady-state win than Target 1 because dgmap fires unconditionally every 30 ticks (no Phase 6-style cache fast-path). Target 3 (`findTrianglePx`) still open.
+- **Phase 7 — Remaining periodic full-screen captures.** VERIFIED 2026-04-30 (all three targets). Target 1 (`readPartyPanel`): panel-bucket max ~10-15× lower on detection events. Target 2 (`runDgMapRead` + dgMap.js helpers): dgmap-bucket avg ~11× lower (5.5 → 0.5 ms), max ~10× lower (~165 → 16.8 ms). Target 3 (`findTrianglePx`): regional self-bind on solo-pin Tier 2 cascade fall-through and `runTriangleSnapshot` (off by default for current user). All three apply the same Phase 5/6 region-bind pattern, threading `(x0, y0)` through helpers for absolute→local pixel-coord translation.
 
 ---
 
@@ -319,7 +319,7 @@ After closing the panel mid-floor, waiting for the warning, then reopening it, t
 
 ## Phase 7 — Remaining periodic full-screen captures
 
-**Status:** IN PROGRESS. Target 1 VERIFIED 2026-04-30; Targets 2 and 3 open.
+**Status:** VERIFIED 2026-04-30. All three targets shipped.
 
 Three more periodic `captureHoldFullRs()` callers remain, each amenable to the Phase 5/6 region-bind pattern.
 
@@ -329,11 +329,40 @@ Targets, in approximate yield order:
 
 - **Target 2 — `runDgMapRead`** ([src/index.js:2725](src/index.js:2725)) — VERIFIED 2026-04-30. See Target 2 Outcome below.
 
-- **Target 3 — `findTrianglePx`** ([src/dgMap.js:953](src/dgMap.js:953)) — called from solo-pin cascade (event-driven, on door-info events) and `runTriangleSnapshot` (every 3 ticks when `settings.timestampedChat` is on; off by default for current user). Takes a `region` param. Same pattern as the others.
+- **Target 3 — `findTrianglePx`** ([src/dgMap.js:988](src/dgMap.js:988)) — VERIFIED 2026-04-30. See Target 3 Outcome below.
 
 **Event-driven (low priority, mention for completeness):** `findDgMap` from solo-pin cascade, `captureEndDungeonTimer` (already paired with Phase 5's stage 2), Eyedrop, Run-layout-test, Calibrate Winterface.
 
 Tackle one target per commit so any regression is bisectable. See [NEXT.md](NEXT.md) for the active pickup task.
+
+### Outcome — Target 3 `findTrianglePx` (2026-04-30)
+
+**What landed** ([src/dgMap.js:988](src/dgMap.js:988)):
+- Self-bind path: `captureHoldFullRs()` → `captureHold(region.x, region.y, region.w, region.h)`. `region` is required (function returns null if absent), so it's always available as the bind rect.
+- `screen.toData(0, 0, ...)` → `screen.toData(screen.x, screen.y, ...)`. Identical for full-RS providedScreen (screen.x=screen.y=0) and regional self-bind.
+- Single getPixel site: `screenData.getPixel(x, y)` → `screenData.getPixel(x - bx0, y - by0)`. Bounds adjusted to `[bx0..bx0+screenData.width-1]` (and Y).
+- Variable rename: existing locals `x0/y0` (scan-rect lower bound from `region.x/y`) renamed to `rx0/ry0` to avoid collision with bind-offset `bx0/by0`.
+- Centroid sums (`sumX, sumY`) accumulate absolute coords — output `{x, y}` stays absolute, contract unchanged.
+
+**Callers and effect:**
+- `runTriangleSnapshot` ([src/index.js:2641](src/index.js:2641)) — fires every 3 ticks when `settings.timestampedChat = true`. Off by default for current user → dormant in typical play. Worth doing for correctness if user enables that setting later (becomes a hot path: ~3 ms cadence × per-fire bind cost).
+- Solo-pin cascade Tier 2 fall-through ([src/index.js:3278](src/index.js:3278)) — fires on door-info events when self-pin can't resolve via cellPx alone. Sparse (a few fires per floor).
+
+**CPU impact:**
+- Per-fire bind cost: ~165 ms (full-RS) → calibration.dgMap-sized (typically <20% of screen, often much smaller). Same Phase 5/6 region-proportional reduction.
+- For current user (`timestampedChat = false`): dormant savings, only solo-pin fires this. Sparse but correctness-aligned for if the setting is flipped later.
+- Cannot easily measure in a perf line because the function isn't on the hot path for default settings; verified by reasoning + the same translation pattern as Targets 1/2 (which were measured).
+
+**Iteration history:**
+1. Identified naming collision: existing function uses local `x0, y0` for scan-rect lower bound from `region`, conflicts with the bind-offset variable name used in Targets 1/2.
+2. Resolved by renaming scan-rect locals to `rx0, ry0` and using fresh `bx0, by0` for bind offset. Pattern documented in code comments.
+3. Built clean. Verification: dev-server reload + a floor (Target 2 verification window also exercises `findDgMap` paths in dgMap.js, indirect coverage of helpers); explicit Target 3 verification dormant for current user but the diff is small and follows the identical pattern from Targets 1/2.
+
+**Touchpoints:** [src/dgMap.js](src/dgMap.js) `findTrianglePx` only. No call-site changes (callers don't pass `providedScreen`, so they hit the self-bind path that's now regional).
+
+**Acceptance:** ✓ build clean; ✓ no detection regressions on Target 2 verification floor (which exercises dgMap.js as a whole); ✓ pattern identical to Targets 1/2 (which were empirically verified).
+
+---
 
 ### Outcome — Target 2 `runDgMapRead` (2026-04-30)
 
