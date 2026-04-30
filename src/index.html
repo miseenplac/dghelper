@@ -5,13 +5,13 @@
   <title>DungKey Tracker</title>
 </head>
 <body>
-  <div id="app" data-active-tab="tracker">
+  <div id="app" data-active-tab="tracker" data-debug-mode="off">
     <header>
       <nav class="tabs" role="tablist">
-        <button class="tab-btn active" id="tab-tracker" role="tab" aria-selected="true" title="Full tracker view (doors, keys, slots, debug).">Tracker</button>
-        <button class="tab-btn" id="tab-floors" role="tab" aria-selected="false" title="Stream-friendly view: only the floor log, always expanded.">Floors</button>
-        <button class="tab-btn" id="tab-calibration" role="tab" aria-selected="false" title="One-time calibration of scan regions (Party, DG Map, Chat, Winterface) plus diagnostics tools.">Calibration</button>
-        <button class="tab-btn" id="tab-settings" role="tab" aria-selected="false" title="Plugin configuration: name, prefs, webhook.">Settings</button>
+        <button class="tab-btn active" id="tab-tracker" role="tab" aria-selected="true">Doors/keys</button>
+        <button class="tab-btn" id="tab-floors" role="tab" aria-selected="false">Floors</button>
+        <button class="tab-btn" id="tab-calibration" role="tab" aria-selected="false">Calibration</button>
+        <button class="tab-btn" id="tab-settings" role="tab" aria-selected="false">Settings</button>
       </nav>
     </header>
 
@@ -22,7 +22,8 @@
     <section class="block">
       <h2>
         Doors <span class="count" id="doors-count">0</span>
-        <button id="reset-btn" class="mini-btn" title="Clear tracked keys &amp; doors — wipes the Doors and Unmatched Keys lists. Floors and party slots are unaffected.">Reset</button>
+        <span class="setting-help" data-help="Right click info on a key-door ingame to register it, along with a detected chat">&#9432;</span>
+        <button id="reset-btn" class="mini-btn" title="Reset keydoors &amp; keys">Reset</button>
       </h2>
       <ul id="doors-list"></ul>
     </section>
@@ -31,10 +32,6 @@
       <h2>Unmatched Keys <span class="count" id="keys-count">0</span></h2>
       <ul id="keys-list"></ul>
     </section>
-
-    <footer>
-      <small>Right-click Info on a locked door in-game to register it.</small>
-    </footer>
 
     <section class="block floors-block">
       <h2>
@@ -52,28 +49,36 @@
     <section class="block history-block">
       <h2>
         Previous Floor Keys <span class="count" id="history-count">0</span>
-        <button id="history-toggle" class="mini-btn" title="Show/hide the unlock-time breakdown for the floor you just finished">Show</button>
+        <button id="history-toggle" class="mini-btn">Show</button>
       </h2>
       <ul id="history-list" hidden></ul>
     </section>
 
-    <section class="block slots-block">
-      <h2>
-        Party Slots <span class="count" id="slots-count">0</span>
-        <span class="slots-hint" id="slots-hint" title="Read-only view of the Ring of Kinship interface. Shows each filled slot's in-game colour and OCR'd name. Self-slot is auto-detected by matching OCR'd names against your own name (Settings \u2192 Your name)."></span>
-      </h2>
-      <ul id="slots-list"></ul>
-    </section>
+    <!--
+      REMOVED-2026-04-30 \u2014 Party Slots block removed from the Tracker tab.
+      The OCR + self-slot detection pipeline (runPartyPanelRead in
+      index.js) is independent of this DOM block; renderPartySlots
+      early-returns when slotsListEl is null so all call sites become
+      harmless no-ops. Downstream consumers (getSelfColor, door-info
+      pin attribution, partyRoster auto-population) read the in-memory
+      data state, not the DOM. The "open your RoK panel" messaging is
+      now covered by the Calibration tab instruction banner + the red
+      RoK warning banner that fires during floors when detection lapses.
 
-    <section class="block debug-block" id="debug-section">
-      <h2>
-        Debug
-        <span class="count" id="debug-stats" title="Tick counter (alternates 1/2 every poll \u2014 hover for details)">\u2026</span>
-        <button id="debug-toggle" class="mini-btn" title="Show/hide the debug log. Counter stays visible either way.">Show</button>
-        <button id="debug-clear" class="mini-btn" title="Clear debug log">Clear</button>
-      </h2>
-      <ul id="debug-list" hidden></ul>
-    </section>
+      To restore: paste the original <section> back into the Tracker tab
+      area (it can sit anywhere among the tracker-only blocks). CSS for
+      .slots-block, .slots-hint, .slot-row, .slots-setup-* is intact
+      in src/style.css; render code in src/ui.js renderPartySlots /
+      renderSlotRow is untouched.
+
+      <section class="block slots-block">
+        <h2>
+          Party Slots <span class="count" id="slots-count">0</span>
+          <span class="slots-hint" id="slots-hint" title="Read-only view of the Ring of Kinship interface. Shows each filled slot's in-game colour and OCR'd name. Self-slot is auto-detected by matching OCR'd names against your own name (Settings &rarr; Your name)."></span>
+        </h2>
+        <ul id="slots-list"></ul>
+      </section>
+    -->
 
     <!-- Calibration tab pane. Visible only when data-active-tab="calibration".
          Order: Party (RoK) first since it's the most setup-blocking step,
@@ -82,28 +87,29 @@
          the same subtitle — no separate Diagnostics heading. -->
     <section class="block calibration-block">
       <div class="modal-body">
-          <div class="modal-subtitle">Calibration <span class="cal-hint" title="Calibrate each scan target once so the plugin knows exactly where to look. For Winterface, open the end-of-floor dialog in-game THEN click Calibrate. For Ring of Kinship and DG Map, the plugin will prompt you to hover the top-left and bottom-right corners. ✓ = calibrated. ⚠ = not set."></span></div>
+          <div class="modal-subtitle">Calibration <span class="cal-hint" title="Calibrate each scan target once so the plugin knows exactly where to look. For Winterface, open the end-of-floor dialog in-game THEN click Calibrate. For Ring of Kinship and DG Map, the plugin will prompt you to hover the top-left and bottom-right corners. &#10003; = calibrated. &#9888; = not set."></span></div>
+          <div class="cal-instruction">The Ring of kinship party interface must be reopened upon entering a floor for the map overlay to work.</div>
           <div id="calibration-panel">
             <div class="cal-row" id="cal-row-party">
-              <span class="cal-label">Ring of Kinship</span>
-              <span class="cal-status" id="cal-status-party">⚠ not calibrated</span>
-              <button class="cal-btn" id="cal-btn-party" title="Define the scan region for the Ring of Kinship party interface. You'll hover TL then BR corners over 3s each.">Calibrate</button>
+              <span class="cal-label">Ring of Kinship <span class="setting-help" data-help="Open your Ring of Kinship party interface in-game first. Click Calibrate, then hover the top-left corner for 5s, then bottom-right for 5s.">&#9432;</span></span>
+              <span class="cal-status" id="cal-status-party">&#9888; not calibrated</span>
+              <button class="cal-btn" id="cal-btn-party" title="Define the scan region for the Ring of Kinship party interface. You'll hover TL then BR corners over 5s each.">Calibrate</button>
               <button class="cal-btn cal-clear" id="cal-clear-party" title="Clear saved calibration for this metric.">Clear</button>
             </div>
             <div class="cal-row" id="cal-row-dgmap">
-              <span class="cal-label">DG Map</span>
-              <span class="cal-status" id="cal-status-dgmap">⚠ not calibrated</span>
-              <button class="cal-btn" id="cal-btn-dgmap" title="Define the scan region for the DG map widget. You'll hover TL then BR corners over 3s each.">Calibrate</button>
+              <span class="cal-label">DG Map <span class="setting-help" data-help="Enter a dungeon floor so the map widget is visible. Click Calibrate, then hover the top-left corner of the map for 5s, then bottom-right for 5s. Make sure it's a large floor, it'll work for all sizes afterwards.">&#9432;</span></span>
+              <span class="cal-status" id="cal-status-dgmap">&#9888; not calibrated</span>
+              <button class="cal-btn" id="cal-btn-dgmap" title="Define the scan region for the DG map widget. You'll hover TL then BR corners over 5s each.">Calibrate</button>
               <button class="cal-btn cal-clear" id="cal-clear-dgmap" title="Clear saved calibration for this metric.">Clear</button>
             </div>
             <div class="cal-row" id="cal-row-chat">
-              <span class="cal-label">Chat</span>
-              <span class="cal-status" id="cal-status-chat">⚠ not located</span>
+              <span class="cal-label">Chat <span class="setting-help" data-help="Re-finds the chatbox on screen if it moved.">&#9432;</span></span>
+              <span class="cal-status" id="cal-status-chat">&#9888; not located</span>
               <button class="cal-btn" id="cal-btn-chat" title="Re-find the chatbox on screen. Useful if you moved it or it wasn't located on plugin start.">Refind</button>
             </div>
             <div class="cal-row" id="cal-row-winterface">
-              <span class="cal-label">Winterface</span>
-              <span class="cal-status" id="cal-status-winterface">⚠ not calibrated</span>
+              <span class="cal-label">Winterface <span class="setting-help" data-help="Only manually press this button to catch the end-floor screen upon a finished floor if it's not automatically detected, and it will recalibrate">&#9432;</span></span>
+              <span class="cal-status" id="cal-status-winterface"></span>
               <button class="cal-btn" id="cal-btn-winterface" title="Open the end-of-floor winterface dialog in-game, then click this button. The plugin captures the dialog's position and uses it as the anchor for future timer OCR.">Calibrate</button>
               <button class="cal-btn cal-clear" id="cal-clear-winterface" title="Clear saved winterface calibration. Plugin will fall back to full-screen dynamic detection.">Clear</button>
             </div>
@@ -111,58 +117,109 @@
           <div class="diagnostics-row">
             <button id="eyedrop-btn" class="mini-btn" title="Click, then hover your mouse over a pixel (e.g. the 'B' of 'Blue wedge key' in chat). After 3s, the RGB is logged in the debug panel.">Eyedrop</button>
             <button id="calibrate-btn" class="mini-btn" title="Run a layout check. For best results, open the end-dungeon winterface first so every step can be validated. Results + suggested fixes are dumped to the debug panel.">Run layout test</button>
+            <label class="diag-toggle" for="diag-show-debug">
+              <input type="checkbox" id="diag-show-debug">
+              <span>Show debug panel</span>
+              <span class="setting-help" data-help="Enable only for troubleshooting reasons.">&#9432;</span>
+            </label>
           </div>
       </div>
     </section>
 
+    <!-- Debug section. Moved 2026-04-30 from Tracker tab to live under
+         the Calibration tab — debug output is a diagnostic, so it sits
+         alongside Eyedrop / Run layout test / the show-debug-panel
+         toggle. CSS rules below ensure this block ONLY shows on the
+         Calibration tab. The in-section "Show/Hide" button still
+         collapses just the <ul> list while keeping the section header
+         visible. -->
+    <section class="block debug-block" id="debug-section">
+      <h2>
+        Debug
+        <span class="count" id="debug-stats" title="Tick counter (alternates 1/2 every poll &mdash; hover for details)">&hellip;</span>
+        <button id="debug-toggle" class="mini-btn" title="Show/hide the debug log. Counter stays visible either way.">Show</button>
+        <button id="debug-clear" class="mini-btn" title="Clear debug log">Clear</button>
+      </h2>
+      <ul id="debug-list" hidden></ul>
+    </section>
+
     <!-- Settings tab pane. Visible only when data-active-tab="settings".
          Inner div keeps the .modal-body class so the existing padding +
-         .cal-row scoping CSS rules continue to apply unchanged. -->
+         .cal-row scoping CSS rules continue to apply unchanged.
+
+         Inline <small class="setting-hint"> hints replaced 2026-04-30 by
+         the <span class="setting-help" data-help="...">&#9432;</span>
+         hover-popover pattern. Single source of truth for hint text now
+         lives in the data-help attribute. -->
     <section class="block settings-block">
       <div class="modal-body">
           <label class="setting-row">
-            <span class="setting-label">Your name</span>
+            <span class="setting-label">In-game name <span class="setting-help" data-help="helps the ring of kinship party interface detection">&#9432;</span></span>
             <input type="text" id="settings-name" placeholder="Your in-game name (e.g. Aari the Iceborn)"
-              title="Your in-game name. Used as the baseline for self-attribution when door-info events fire. Teammates are auto-discovered from the Ring of Kinship panel \u2014 no need to type them here."
               autocomplete="off" spellcheck="false">
-            <small class="setting-hint">Baseline entry for self-detection. Teammates are auto-discovered from the Ring of Kinship panel \u2014 no need to type them here.</small>
           </label>
           <label class="setting-row">
-            <span class="setting-label">Max floors kept</span>
+            <span class="setting-label">Max floors logged <span class="setting-help" data-help="When floors exceed the given number, the oldest floor is cleared from the cache.">&#9432;</span></span>
             <input type="number" id="settings-max-floors" min="10" max="100" step="1" value="100">
-            <small class="setting-hint">When the log exceeds this, the oldest floor is auto-dropped. Hard cap 100; Dungeoneering has only 60 floors so 100 comfortably covers any single session.</small>
           </label>
           <label class="setting-row">
-            <span class="setting-label">Floor log webhook URL</span>
-            <input type="url" id="settings-floor-webhook" placeholder="https://script.google.com/macros/s/\u2026/exec" autocomplete="off" spellcheck="false">
-            <small class="setting-hint">Optional. Plugin POSTs each completed floor's timer row to this URL as JSON. Typical target: a Google Sheet with an Apps Script doPost handler deployed as a web app. Empty to disable.</small>
+            <span class="setting-label">Floor log webhook URL (optional) <span class="setting-help" data-help="Each completed floor is sent as JSON to your URL. Common setup: a Google Sheet + Apps Script web app deployed with 'Anyone' access &mdash; paste its /exec URL here. Payload: {startedAt, endedAt, time, timeSeconds}. Leave empty to disable.">&#9432;</span></span>
+            <input type="url" id="settings-floor-webhook" placeholder="https://script.google.com/macros/s/&hellip;/exec" autocomplete="off" spellcheck="false">
           </label>
           <div class="setting-row">
             <label class="setting-check">
               <input type="checkbox" id="settings-show-finish-time">
-              <span class="setting-label">Show finish time</span>
+              <span class="setting-label">Show real-life time</span>
+              <span class="setting-help" data-help="Floors logged will also show what time they were started/finished in your timezone. Off by default to save space in the floors tab.">&#9432;</span>
             </label>
-            <small class="setting-hint">Display the wall-clock time each floor ended next to its duration (e.g., "finished 01:25"). Off by default to keep rows compact.</small>
           </div>
           <div class="setting-row">
             <label class="setting-check">
-              <input type="checkbox" id="settings-timestamped-chat">
-              <span class="setting-label">Use chat timestamps for pin accuracy</span>
+              <input type="checkbox" id="settings-show-prev-floor-keys">
+              <span class="setting-label">Show previous floor keys</span>
+              <span class="setting-help" data-help="Marks time between key found and key used">&#9432;</span>
             </label>
-            <small class="setting-hint">Requires chat timestamps enabled in RS3 (Game Settings \u2192 Chat \u2192 Show timestamps). Bypasses the info\u2192teleport race by matching door-info events to a historical map snapshot at the chat line's in-game timestamp.</small>
-          </div>
-          <div class="setting-row">
-            <label class="setting-check">
-              <input type="checkbox" id="settings-show-debug">
-              <span class="setting-label">Show debug panel</span>
-            </label>
-            <small class="setting-hint">Shows the raw OCR + match/miss log at the bottom of the window. Useful when diagnosing OCR or palette issues. Hide to save screen space when everything's working.</small>
-          </div>
-          <div class="setting-row">
-            <button id="settings-clear-teammates" class="mini-btn" title="Wipes the auto-discovered teammate list from your roster, keeping only your own name. Next RoK panel read re-populates from whatever party you're currently in.">Clear known teammates</button>
-            <small class="setting-hint">Keeps your name but wipes auto-discovered teammates. Next RoK panel read re-populates from the current party.</small>
           </div>
       </div>
+
+      <!--
+        REMOVED-2026-04-30 \u2014 three setting rows preserved verbatim for easy
+        restoration. To restore any of these:
+          1. Move the relevant <div> / <label> back into the .modal-body above.
+          2. In src/index.js, search for "REMOVED-2026-04-30" and uncomment
+             the corresponding binding block.
+          3. For "settings-timestamped-chat": also remove the force-set
+             `settings.timestampedChat = true;` line near loadSettings()
+             so the toggle controls the value again.
+          4. For "settings-show-debug": also remove the force-set
+             `settings.showDebugPanel = false;` line near loadSettings()
+             AND switch the binding selector back from `#diag-show-debug`
+             to `#settings-show-debug`. Remove the corresponding row from
+             the Calibration tab's <div class="diagnostics-row">.
+
+        Original rows:
+
+        <div class="setting-row">
+          <label class="setting-check">
+            <input type="checkbox" id="settings-timestamped-chat">
+            <span class="setting-label">Use chat timestamps for pin accuracy</span>
+          </label>
+          <small class="setting-hint">Requires chat timestamps enabled in RS3 (Game Settings &rarr; Chat &rarr; Show timestamps). Bypasses the info&rarr;teleport race by matching door-info events to a historical map snapshot at the chat line's in-game timestamp.</small>
+        </div>
+
+        <div class="setting-row">
+          <label class="setting-check">
+            <input type="checkbox" id="settings-show-debug">
+            <span class="setting-label">Show debug panel</span>
+          </label>
+          <small class="setting-hint">Shows the raw OCR + match/miss log at the bottom of the window. Useful when diagnosing OCR or palette issues. Hide to save screen space when everything's working.</small>
+        </div>
+
+        <div class="setting-row">
+          <button id="settings-clear-teammates" class="mini-btn" title="Wipes the auto-discovered teammate list from your roster, keeping only your own name. Next RoK panel read re-populates from whatever party you're currently in.">Clear known teammates</button>
+          <small class="setting-hint">Keeps your name but wipes auto-discovered teammates. Next RoK panel read re-populates from the current party.</small>
+        </div>
+      -->
     </section>
   </div>
 </body>

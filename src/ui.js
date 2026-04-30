@@ -86,9 +86,19 @@ export function mount() {
   renderHistory();
 }
 
+// Debug-panel gating: when OFF, dbg() short-circuits before any DOM work.
+// Default true so any dbg() calls during module load (before index.js
+// flips the flag based on settings) aren't lost. index.js calls
+// setDebugEnabled(settings.showDebugPanel) on load + on toggle change.
+let _dbgEnabled = true;
+export function setDebugEnabled(enabled) {
+  _dbgEnabled = !!enabled;
+}
+
 // Debug panel — visible inside the app since DevTools is awkward to open.
 // kind: 'raw' | 'match' | 'miss' | 'error' | 'info'
 export function dbg(kind, msg) {
+  if (!_dbgEnabled) return;
   if (!debugListEl) return;
   const li = document.createElement('li');
   li.className = 'dbg-' + (kind || 'info');

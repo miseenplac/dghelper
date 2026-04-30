@@ -25,7 +25,7 @@ import './style.css';
 
 import { parseChatLine, resolvePlayerName } from './parser.js';
 import { tracker } from './tracker.js';
-import { mount, renderStatus, dbg, setDebugStats, render as renderUI, setRenderContext, renderPartySlots } from './ui.js';
+import { mount, renderStatus, dbg, setDebugStats, render as renderUI, setRenderContext, renderPartySlots, setDebugEnabled } from './ui.js';
 import * as floor from './floor.js';
 import { captureEndDungeonTimer, peekForWinterface } from './timer.js';
 import { readPartyPanel } from './partyPanel.js';
@@ -103,6 +103,13 @@ const DEFAULT_SETTINGS = {
   // keep rows compact; users who want to correlate session timestamps
   // with their floor history can enable it.
   showFloorFinishTime: false,
+  // UI toggle: whether the Previous Floor Keys section is visible at
+  // all on the Tracker tab. Default ON to preserve existing behaviour;
+  // users can hide it via Settings to declutter the tracker. The
+  // section's own Show/Hide button still collapses the list while the
+  // section header stays visible — this setting hides the entire
+  // section instead.
+  showPreviousFloorKeys: true,
 };
 let settings = { ...DEFAULT_SETTINGS };
 function loadSettings() {
@@ -127,6 +134,9 @@ function loadSettings() {
       if (typeof obj.showFloorFinishTime === 'boolean') {
         settings.showFloorFinishTime = obj.showFloorFinishTime;
       }
+      if (typeof obj.showPreviousFloorKeys === 'boolean') {
+        settings.showPreviousFloorKeys = obj.showPreviousFloorKeys;
+      }
     }
   } catch (_) {}
 }
@@ -135,6 +145,31 @@ function saveSettings() {
   catch (_) {}
 }
 loadSettings();
+
+// ---- Forced settings overrides (migration 2026-04-30) -------------------
+// Two settings were graduated out of user control on 2026-04-30 as part
+// of the Settings-tab UI compaction:
+//
+//   timestampedChat: was opt-in (default false). Promoted to ALWAYS ON
+//     after fallback usage data showed it firing >1/floor on average;
+//     leaving users with it OFF caused unsatisfactory pin accuracy. The
+//     CPU cost is bounded by the existing gates inside runTriangleSnapshot
+//     (active-floor + dgMap-calibrated + selfColor-detected) so the work
+//     is zero outside DG runs.
+//
+//   showDebugPanel: was default true. Migrated to default OFF so dbg()
+//     short-circuits before any DOM work. Saves ~5 DOM ops per dbg() call
+//     for every user. Toggle moved to the Calibration tab (next to
+//     Eyedrop / Run layout test) for troubleshooting access.
+//
+// Both lines force-overwrite any persisted value so existing users are
+// migrated on their next plugin load (no Ctrl+R / re-install needed).
+// To restore the toggles: see the REMOVED-2026-04-30 comment block at
+// the bottom of <section class="block settings-block"> in src/index.html.
+settings.timestampedChat = true;
+settings.showDebugPanel = false;
+saveSettings();
+
 floor.setMaxFloors(settings.maxFloors);
 
 // ---- Party roster --------------------------------------------------------
@@ -528,12 +563,32 @@ if (calibrateBtn) {
   calibrateBtn.addEventListener('click', runCalibration);
 }
 
+// Surface the debug panel for diagnostic output (calibration, eyedrop,
+// layout test). After 2026-04-30 the Show-Debug-Panel toggle moved to
+// the Calibration tab and defaults OFF, with dbg() short-circuiting at
+// the ui.js level. So this helper now does the full enable cascade:
+//   1. setDebugEnabled(true) — un-gate dbg() so subsequent calls write.
+//   2. Un-hide the parent <section id="debug-section"> (Settings-controlled).
+//   3. Un-collapse <ul id="debug-list"> (in-section toggle controlled).
+//   4. Sync the in-section "Show/Hide" button text + the Calibration-tab
+//      checkbox so UI matches the new state.
+//   5. Persist settings.showDebugPanel = true so the user can review the
+//      output afterwards (they can toggle it back OFF in Calibration tab).
 function ensureDebugPanelVisible() {
+  setDebugEnabled(true);
+  const section = document.getElementById('debug-section');
+  if (section && section.hidden) section.hidden = false;
   const list = document.getElementById('debug-list');
   const toggle = document.getElementById('debug-toggle');
   if (list && list.hidden) {
     list.hidden = false;
     if (toggle) toggle.textContent = 'Hide';
+  }
+  const diagToggle = document.getElementById('diag-show-debug');
+  if (diagToggle && !diagToggle.checked) diagToggle.checked = true;
+  if (settings.showDebugPanel !== true) {
+    settings.showDebugPanel = true;
+    saveSettings();
   }
 }
 
@@ -1027,7 +1082,11 @@ function renderCalibrationStatus() {
       wfEl.textContent = `\u2713 locked at (${wf.x},${wf.y})`;
       wfEl.classList.add('set');
     } else if (_winterfaceLastDetectedAt === 0) {
-      wfEl.textContent = '\u26A0 never detected';
+      // Visually quiet on the first-load case \u2014 the \u24D8 tooltip on the
+      // Winterface label now provides the context that this is opt-in.
+      // To restore the original "\u26A0 never detected" badge, change '' to
+      // '\u26A0 never detected'.
+      wfEl.textContent = '';
       wfEl.classList.remove('set');
     } else if (nowMs - _winterfaceLastDetectedAt < CAL_FRESHNESS_MS) {
       wfEl.textContent = '\u2713 detected';
@@ -1303,9 +1362,11 @@ if (calBtnChat) {
 // Active-tab toggling is handled by the Tab nav block above.
 const maxFloorsInput    = document.getElementById('settings-max-floors');
 const settingsNameInput = document.getElementById('settings-name');
-const showDebugInput      = document.getElementById('settings-show-debug');
+// Show-debug-panel toggle migrated 2026-04-30 from Settings tab to
+// Calibration tab. Selector changed from #settings-show-debug to
+// #diag-show-debug. To restore: see REMOVED-2026-04-30 in src/index.html.
+const showDebugInput      = document.getElementById('diag-show-debug');
 const showFinishTimeInput = document.getElementById('settings-show-finish-time');
-const clearTeammatesBtn   = document.getElementById('settings-clear-teammates');
 const debugSection        = document.getElementById('debug-section');
 
 // "Your name" input — edits partyRoster[0] only. Teammates at
@@ -1341,17 +1402,30 @@ if (settingsNameInput) {
   settingsNameInput.addEventListener('blur', commit);
 }
 
-// "Show debug panel" — hides the entire Debug section when off. dbg()
-// calls still execute, so flipping back on shows historical entries.
+// "Show debug panel" — hides the entire Debug section AND short-circuits
+// dbg() at the ui.js level when off (post 2026-04-30 migration). The
+// dbg() gate is the actual CPU win; the section-hidden flip is the
+// visual reflection. Toggle lives in the Calibration tab now (selector
+// changed to #diag-show-debug); default OFF.
+//
+// Same toggle ALSO gates Eyedrop + Run layout test buttons via the
+// #app[data-debug-mode="..."] CSS attribute selector. Those buttons
+// stay in the DOM (no removal/re-wiring needed) — visibility is pure
+// CSS. When debug panel is OFF, the diagnostics row shows only the
+// toggle itself; ON reveals the diagnostic buttons.
 if (showDebugInput && debugSection) {
   showDebugInput.checked = !!settings.showDebugPanel;
   debugSection.hidden = !settings.showDebugPanel;
+  setDebugEnabled(!!settings.showDebugPanel);
+  appEl.dataset.debugMode = settings.showDebugPanel ? 'on' : 'off';
   showDebugInput.addEventListener('change', () => {
     const enabled = !!showDebugInput.checked;
     if (enabled === settings.showDebugPanel) return;
     settings.showDebugPanel = enabled;
     saveSettings();
     debugSection.hidden = !enabled;
+    setDebugEnabled(enabled);
+    appEl.dataset.debugMode = enabled ? 'on' : 'off';
   });
 }
 
@@ -1369,27 +1443,48 @@ if (showFinishTimeInput) {
   });
 }
 
-// "Clear known teammates" — wipes partyRoster[1+] (auto-discovered
-// teammate names) while keeping the user's own name at index 0.
-// Useful for cleaning out stale entries from past parties. Also
-// clears the self-slot cache since the elimination baseline just
-// changed, and resets the missing-teammates hint so the user can
-// see it again on the next multi-party event if still unresolved.
-if (clearTeammatesBtn) {
-  clearTeammatesBtn.addEventListener('click', () => {
-    if (partyRoster.length <= 1) {
-      dbg('info', 'Clear teammates: already empty (roster has only your name).');
-      return;
-    }
-    const n = partyRoster.length - 1;
-    partyRoster = partyRoster.slice(0, 1);
-    saveParty();
-    pushRenderContext();
-    clearSelfSlot();
-    _loggedMissingTeammatesHint = false;
-    dbg('match', `Cleared ${n} known teammate(s). Next RoK panel read will re-populate.`);
+// "Show previous floor keys" — hides/shows the entire .history-block
+// section on the Tracker tab. Default ON to preserve existing behaviour.
+// renderHistory() inside the section is gated by historyOpen (false until
+// the in-section Show/Hide button is clicked), so a hidden section costs
+// nothing per tick — the user just doesn't see the panel header either.
+const showPrevFloorKeysInput = document.getElementById('settings-show-prev-floor-keys');
+const historyBlockEl = document.querySelector('.history-block');
+if (showPrevFloorKeysInput && historyBlockEl) {
+  showPrevFloorKeysInput.checked = !!settings.showPreviousFloorKeys;
+  historyBlockEl.hidden = !settings.showPreviousFloorKeys;
+  showPrevFloorKeysInput.addEventListener('change', () => {
+    const enabled = !!showPrevFloorKeysInput.checked;
+    if (enabled === settings.showPreviousFloorKeys) return;
+    settings.showPreviousFloorKeys = enabled;
+    saveSettings();
+    historyBlockEl.hidden = !enabled;
   });
 }
+
+// REMOVED-2026-04-30 — "Clear known teammates" button removed from
+// Settings tab. Roster growth was deemed harmless (storage trivial,
+// fuzzy-match self-attribution constrained to roster[0] only). To
+// restore: paste the original <div class="setting-row"> back from the
+// REMOVED-2026-04-30 block in src/index.html, then uncomment this
+// binding block. Nothing else in the codebase depends on it.
+//
+// const clearTeammatesBtn   = document.getElementById('settings-clear-teammates');
+// if (clearTeammatesBtn) {
+//   clearTeammatesBtn.addEventListener('click', () => {
+//     if (partyRoster.length <= 1) {
+//       dbg('info', 'Clear teammates: already empty (roster has only your name).');
+//       return;
+//     }
+//     const n = partyRoster.length - 1;
+//     partyRoster = partyRoster.slice(0, 1);
+//     saveParty();
+//     pushRenderContext();
+//     clearSelfSlot();
+//     _loggedMissingTeammatesHint = false;
+//     dbg('match', `Cleared ${n} known teammate(s). Next RoK panel read will re-populate.`);
+//   });
+// }
 
 if (maxFloorsInput) {
   // Reflect stored preference, clamped to the hard cap enforced by floor.js.
@@ -1415,30 +1510,32 @@ if (maxFloorsInput) {
   maxFloorsInput.addEventListener('blur', commit);
 }
 
-// Chat-timestamp-matched pin accuracy (opt-in). When enabled, every
-// TRIANGLE_SNAPSHOT_INTERVAL_TICKS a lightweight trianglePx sample
-// is cached into a ring buffer; on door-info events with a parseable
-// chat timestamp, the solo-pin code uses the historical snapshot
-// matching the chat's in-game time instead of a fresh capture.
-// Zero overhead when disabled — the runTriangleSnapshot hook early-
-// returns and tier-0 of solo-pin is gated on the setting.
-const timestampedChatInput = document.getElementById('settings-timestamped-chat');
-if (timestampedChatInput) {
-  timestampedChatInput.checked = !!settings.timestampedChat;
-  timestampedChatInput.addEventListener('change', () => {
-    const enabled = !!timestampedChatInput.checked;
-    if (enabled === settings.timestampedChat) return;
-    settings.timestampedChat = enabled;
-    saveSettings();
-    if (!enabled) {
-      // Flush the buffer when disabling so a subsequent re-enable
-      // doesn't briefly match against stale snapshots captured pre-
-      // disable.
-      _triangleSnapshots = [];
-    }
-    dbg('info', `Chat-timestamp pin matching: ${enabled ? 'ON' : 'OFF'}`);
-  });
-}
+// REMOVED-2026-04-30 — "Use chat timestamps for pin accuracy" toggle
+// graduated from opt-in to always-on. The runTriangleSnapshot hook
+// still reads settings.timestampedChat, but the value is force-set to
+// true near loadSettings(), so the gate always falls through. To
+// restore the toggle: paste the original <div class="setting-row">
+// back from the REMOVED-2026-04-30 block in src/index.html, remove
+// the `settings.timestampedChat = true;` force-set line near
+// loadSettings(), then uncomment this binding block.
+//
+// const timestampedChatInput = document.getElementById('settings-timestamped-chat');
+// if (timestampedChatInput) {
+//   timestampedChatInput.checked = !!settings.timestampedChat;
+//   timestampedChatInput.addEventListener('change', () => {
+//     const enabled = !!timestampedChatInput.checked;
+//     if (enabled === settings.timestampedChat) return;
+//     settings.timestampedChat = enabled;
+//     saveSettings();
+//     if (!enabled) {
+//       // Flush the buffer when disabling so a subsequent re-enable
+//       // doesn't briefly match against stale snapshots captured pre-
+//       // disable.
+//       _triangleSnapshots = [];
+//     }
+//     dbg('info', `Chat-timestamp pin matching: ${enabled ? 'ON' : 'OFF'}`);
+//   });
+// }
 
 // Floor log webhook URL input. Accepts http(s):// URLs only; empty
 // disables the feature. postFloorToWebhook fires on each successful

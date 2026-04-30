@@ -84,14 +84,16 @@ nav.tabs .tab-btn.active {
 #app[data-active-tab="floors"] #floors-toggle { display: none; }
 #app[data-active-tab="floors"] #floors-list { display: block !important; }
 
-/* Tracker tab hides the per-tab blocks (floors / calibration / settings) —
-   each lives in its own dedicated tab. Each non-tracker tab shows only
-   its own block; footer hidden on those tabs too. */
+/* Tracker tab hides the per-tab blocks (floors / calibration / settings /
+   debug) — each lives in its own dedicated tab. Debug-block moved to
+   Calibration tab on 2026-04-30 (sits alongside diagnostics tools).
+   Each non-tracker tab shows only its own block; footer hidden too. */
 #app[data-active-tab="tracker"] .floors-block,
 #app[data-active-tab="tracker"] .calibration-block,
-#app[data-active-tab="tracker"] .settings-block { display: none; }
+#app[data-active-tab="tracker"] .settings-block,
+#app[data-active-tab="tracker"] .debug-block { display: none; }
 
-#app[data-active-tab="calibration"] .block:not(.calibration-block) { display: none; }
+#app[data-active-tab="calibration"] .block:not(.calibration-block):not(.debug-block) { display: none; }
 #app[data-active-tab="calibration"] footer { display: none; }
 
 #app[data-active-tab="settings"] .block:not(.settings-block) { display: none; }
@@ -147,6 +149,7 @@ nav.tabs .tab-btn.active {
   display: flex;
   align-items: center;
   gap: 6px;
+  position: relative;  /* Anchor for .setting-help popover when ⓘ icons appear inside h2 */
 }
 
 .count {
@@ -480,6 +483,7 @@ footer {
   gap: 3px;
   font-size: 11px;
   color: #d0d0d0;
+  position: relative;  /* Anchor for .setting-help popover */
 }
 
 .setting-label {
@@ -543,11 +547,82 @@ footer {
   letter-spacing: 0.3px;
 }
 
+/* Inline-hint text under a setting row. Kept as a CSS rule because the
+ * three currently-removed settings (timestamped chat, show debug panel,
+ * clear known teammates) can be restored from the comment block at the
+ * bottom of <section class="block settings-block"> in src/index.html
+ * and would re-introduce these elements. Active settings now use the
+ * .setting-help (ⓘ) hover-popover pattern instead. */
 .setting-hint {
   color: #888;
   font-size: 10px;
   font-style: italic;
   line-height: 1.4;
+}
+
+/* ⓘ help icon next to a setting label. Hovering / clicking reveals
+ * a custom dark-themed popover containing the full hint text from the
+ * data-help attribute. CSS-only; no JS so cannot break style-loader
+ * injection (HANDOFF invariant #16). pointer-events: none on the
+ * popover prevents hover-flicker as the cursor moves over it.
+ *
+ * Sized to never overflow a narrow plugin window: max-width clamps to
+ * (240px, calc(100vw - 24px)) so a 160px-wide window still fits. */
+.setting-help {
+  display: inline-block;
+  margin-left: 6px;
+  color: #5a8fd0;
+  font-size: 11px;
+  cursor: help;
+  user-select: none;
+  /* No position: relative — the popover anchors to the closest positioned
+   * ancestor (.setting-row or .diagnostics-row, both full-width). That
+   * lets the popover use right:0 to anchor to the row's right edge,
+   * preventing right-side clipping when the icon sits near the edge of
+   * a narrow plugin window. */
+}
+.setting-help:hover::after,
+.setting-help:focus::after {
+  content: attr(data-help);
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: auto;
+  margin-top: 4px;
+  background: #1a1a1a;
+  color: #d0d0d0;
+  border: 1px solid #444;
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: normal;
+  line-height: 1.4;
+  letter-spacing: normal;
+  text-transform: none;
+  width: max-content;
+  max-width: min(240px, calc(100vw - 24px));
+  white-space: normal;
+  z-index: 100;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+/* Diagnostics-row checkbox toggle (e.g. "Show debug panel" inside the
+ * Calibration tab). Sits next to the Eyedrop / Run layout test buttons.
+ * Uses the same compact font + spacing so it reads as part of the row. */
+.diag-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: #d0d0d0;
+  cursor: pointer;
+  padding: 3px 4px;
+}
+.diag-toggle input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
 }
 
 /* Party Slots — reflects the Ring of Kinship interface that the plugin has
@@ -681,6 +756,7 @@ footer {
   gap: 8px;
   padding: 3px 0;
   font-size: 11px;
+  position: relative;  /* Anchor for .setting-help popover on the cal-label ⓘ icons */
 }
 .cal-row:not(:last-child) {
   border-bottom: 1px solid #2a251a;
@@ -772,6 +848,45 @@ footer {
   font-weight: 600;
 }
 
+/* Scrollbar styling. Default browser scrollbars are ~15px wide and
+ * OS-styled, which clashes with the plugin's dark theme and eats
+ * horizontal space at narrow window widths. Alt1's CEF supports the
+ * ::-webkit-scrollbar pseudo-elements, so a thin custom bar slots in
+ * cleanly. Applies globally — body scrollbar plus any inner overflow-y
+ * containers (debug list, floor list, etc.) inherit. */
+::-webkit-scrollbar         { width: 4px; height: 4px; }
+::-webkit-scrollbar-track   { background: transparent; }
+::-webkit-scrollbar-thumb   { background: #3a3a3a; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+::-webkit-scrollbar-corner  { background: transparent; }
+
+/* Debug-mode gating for diagnostic-only buttons (Eyedrop + Run layout
+ * test). When the user has Show debug panel toggle OFF, these buttons
+ * are hidden — they're troubleshooting tools, not day-to-day. Toggle
+ * ON in the Calibration tab's diagnostics row to bring them back.
+ * The buttons stay in the DOM (no element removal) so JS bindings
+ * don't have to be re-wired on toggle. */
+#app[data-debug-mode="off"] #eyedrop-btn,
+#app[data-debug-mode="off"] #calibrate-btn { display: none; }
+
+/* Calibration tab instruction banner — sits between the CALIBRATION
+ * subtitle and the cal-rows. Subtle blue tint so it reads as an info
+ * note (the red .rok-warning banner above #status is for active errors;
+ * this one is passive guidance). The 2026-04-30 Party-Slots removal
+ * made this the primary surface for the "open the RoK panel each
+ * floor" message; the red warning still fires during floors when
+ * detection lapses. */
+.cal-instruction {
+  font-size: 10.5px;
+  color: #c8d0d8;
+  line-height: 1.4;
+  padding: 5px 8px;
+  margin-bottom: 6px;
+  background: #1f2530;
+  border-left: 3px solid #4a6285;
+  border-radius: 2px;
+}
+
 /* Diagnostics row inside the Settings modal — buttons for Eyedrop +
  * Run layout test sit horizontally with a small gap. Both are mini-btn
  * styled, just need the container to lay them out. */
@@ -779,6 +894,7 @@ footer {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  position: relative;  /* Anchor for .setting-help popover inside .diag-toggle */
 }
 .diagnostics-row .mini-btn {
   margin-left: 0;
