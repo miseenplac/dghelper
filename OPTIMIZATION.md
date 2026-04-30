@@ -33,6 +33,7 @@ Intentionally vague at this point — these will sharpen as we learn. Each phase
 - **Phase 2 — Profiling instrumentation** — VERIFIED 2026-04-30. Lightweight always-on perf line in debug log, once per minute. Confirmed emitting clean lines on user's machine; first data point flagged chat OCR (`reader.read()`) as the dominant CPU consumer.
 - **Phase 3 — Targeted reductions** — VERIFIED 2026-04-30. RoK cheap pixel re-verification (Solution F) shipped — banner no longer flickers on/off during a floor; OCR is skipped while the cached origin's red pixels still pass the classifier. Provisional-bump tweak halved open-the-panel-during-floor latency from ~6 s to ~3 s.
 - **Phase 4 — Slow-CPU verification** — READY. Push to main + ask original slow-CPU testers to retest.
+- **Phase 5 — Winterface auto-probe reduction** — VERIFIED 2026-04-30. Active-floor gate + two-stage capture (cheap region bind for peek, full bind only on confirmed peek hit). User-confirmed felt-instant winterface registration on test deploy.
 
 ---
 
@@ -235,6 +236,67 @@ F was preferred for being the only option that delivers BOTH the flicker fix AND
 - User asks the testers who originally reported lag to retest.
 - Verified → project complete.
 - Not verified → re-examine Phase 3 candidates (revisit the reasoning, consider candidates we deferred), iterate.
+
+---
+
+## Phase 5 — Winterface auto-probe reduction
+
+**Status:** VERIFIED 2026-04-30. User-confirmed felt-instant winterface registration; two floors tested clean.
+
+**Objective:** reduce CPU spent by `runAutoWinterfaceProbe`. Pre-Phase-5 the probe fired every 1.8 s while ANY plugin state allowed it, including outside dungeons entirely, and each fire bound the full RS window before peeking — paying full-screen capture cost for a peek that only sampled the title band. Two-part reduction.
+
+### Outcome (2026-04-30)
+
+**Part 1 — Active-floor gate.**
+- Old: `if (cur && cur.time) return;` — bailed only when "already captured timer for this floor."
+- New: `if (!cur || cur.time) return;` — also bails when no current floor exists at all.
+- Removed the now-unreachable "plugin booted mid-dungeon" hint code + `_loggedMidDungeonBootHint` state. The hint paid full capture cost for a one-shot diagnostic — exactly the kind of waste this project targets.
+- `cur.ended` INTENTIONALLY left unguarded so floors closed via Tier-2 outfit-bonus chat can still recover their timer if the winterface is on screen.
+- `nextAutoPeekTick` advances after the gate, so the first probe after a floor-start fires immediately (no missed-timer risk from gate latency).
+
+**Part 2 — Two-stage capture.**
+- Old: every probe tick bound the full RS window (`captureHoldFullRs()`) before peeking.
+- New: stage 1 binds a narrow X-clipped column (520 px × full RS height) via `a1lib.captureHold(peekX0, 0, peekW, alt1.rsHeight)`. Most probe ticks bottom out at stage 1's threshold check. Stage 2 (only on peek hit ≥ AUTO_PEEK_HIT_THRESHOLD) re-binds full RS so timer-digit OCR can reach pixels outside the title band — fires roughly once per floor.
+- Why X-clipped column rather than Y-clipped band: `peekForWinterface` uses `screen.height * 0.15 / 0.55` internally to scope its Y scan; Y-clipping the bind would map those fractions to the wrong physical Y range. Keeping full height preserves the existing fraction math.
+- Confirmed safe vs other subsystems: alt1's "one bind per app" replacement happens BETWEEN subsystem calls (each captures-then-uses inside its own function), not during them — DG map / RoK panel scans unaffected.
+
+**CPU impact:**
+- Outside dungeons → zero probe work (was ~33 captures/min).
+- In-floor → cheap region bind per probe tick instead of full RS bind. Full RS bind only fires on actual peek hits, ~once per floor.
+- Empirical evidence on `alt1.bindRegion` cost: meaningfully region-proportional. The user-felt result ("feels literally instant" on test deploy) implies a much larger reduction than the conservative pre-ship range (0-73%); the actual delta is closer to the high end. This answers the F/R question that was open during planning.
+
+**Iteration history:**
+1. **Active-floor gate first.** Landed standalone, verified 2026-04-30 (two floors finished cleanly). User then asked about further winterface CPU reduction options.
+2. **Considered chat-signal triggers** (boss-drop "received item:" / outfit-bonus). Outfit-bonus rejected — fires post-winterface, no useful pre-trigger value. Boss-drop window assumed a fixed timeout that turned out to be a fragile judgment call (player can take 30+ min after boss kill). Tabled in favour of region-based attack.
+3. **Region-based capture explored.** alt1's `captureHold(x, y, w, h)` binds only a region. Verified other subsystems (DG map, RoK panel) wouldn't break — each captures-then-uses inside its own function call.
+4. **Two-stage shape settled.** Cheap region bind for peek (frequent), full bind only on hit (rare). Shipped at current 1.8 s cadence — deferred cadence increase pending empirical R/F data, which the user-felt result then provided.
+
+**Touchpoints:** [src/index.js](src/index.js) `runAutoWinterfaceProbe`, removed `_loggedMidDungeonBootHint` state.
+
+**Acceptance:** floor-end timer captures correctly ✓ (user verified two floors); felt-CPU improvement at floor-end moment ✓ (user reported "feels literally instant").
+
+---
+
+## Phase 6 candidate — Full-screen capture audit
+
+**Status:** OPEN. Discovered during Phase 5; user explicitly flagged as the next investigation direction.
+
+The Phase 5 result (alt1's `bindRegion` is region-proportional in cost) means every other periodic full-screen `captureHoldFullRs()` call in the plugin is paying for pixels it never reads. Direct grep of `captureHoldFullRs` across `src/` reveals:
+
+**Periodic / per-tick (highest yield candidates):**
+- `cheapPanelStillPresent` ([src/index.js:2237](src/index.js)) — fires EVERY TICK while the RoK panel cache is valid. Captures the full RS window for a 30×3 region read. Most striking case: function literally named "cheap" but does the most expensive bind in the tick loop.
+- `runDgMapRead` ([src/index.js:2711](src/index.js)) — every 30 ticks (~3 s). Full bind, then `findDgMap` does a region toData inside.
+- `runPartyPanelRead` → `readPartyPanel` ([src/partyPanel.js:931](src/partyPanel.js)) — every 30 ticks (~3 s) when active-floor-gate passes. Full bind.
+- `runTriangleSnapshot` → `findTrianglePx` ([src/dgMap.js:953](src/dgMap.js)) — every 3 ticks (~300 ms) when `settings.timestampedChat` is on. Off by default for current user.
+
+**Event-driven (lower priority):**
+- `findDgMap` ([src/dgMap.js:795](src/dgMap.js)) — called from solo-pin cascade on door-info events.
+- `captureEndDungeonTimer` ([src/timer.js:193](src/timer.js)) — already paired with Phase 5's stage 2.
+- `readPixelRgb` (eyedrop, [src/index.js:483](src/index.js)) — single user click.
+- `runCalibration` (Run layout test, [src/index.js:577](src/index.js)) — single user click.
+- Calibrate Winterface button ([src/index.js:1233](src/index.js)) — single user click.
+
+The same two-stage / regional-bind pattern likely applies to all four periodic candidates. `cheapPanelStillPresent` is the obvious first target — it's the highest-frequency caller AND it only reads a 30×3 window, so the savings ratio per fire would be enormous (4-5 orders of magnitude in pixel-data, not just the ~73% of the winterface case).
 
 ---
 

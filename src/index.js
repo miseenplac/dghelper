@@ -1987,73 +1987,80 @@ const AUTO_PEEK_HIT_THRESHOLD = 20;
 // silent after — resets on floor change via the startedAt key.
 let _loggedFailedProbeFor = null;
 
-// One-shot hint for the "plugin booted mid-dungeon" case: winterface peek
-// clears its hit threshold but there's no current floor to attach the timer
-// to (no floor-start banner was captured — Alt1 page reload mid-run, or
-// banner OCR was missed). Without this hint the auto-probe silently no-ops
-// and the user can't tell whether winterface detection works on their
-// layout. Resets to false whenever a floor IS present (next floor-start
-// rearms the pipeline), so the hint fires again if the no-floor state
-// recurs later in the session.
-let _loggedMidDungeonBootHint = false;
-
 /**
- * Auto-probe winterface detector. No rising-edge — we just check every ~1.8s
- * whether:
- *   (a) there's a floor that still needs a timer (`!cur.time`), AND
- *   (b) the peek reports a strong hit (≥ AUTO_PEEK_HIT_THRESHOLD).
- * If both, we attempt the timer OCR. Floor state is mutated ONLY on OCR
- * success — this prevents false-positive peeks from spuriously ending an
- * ongoing floor. If OCR fails, we retry on the next tick (handles dialog
- * animation timing) until either success, the floor already has a timer,
- * or the winterface closes.
+ * Auto-probe winterface detector. Gated to active-floor-missing-timer
+ * windows — winterface only appears at floor end, so probing outside
+ * that window is wasted CPU. Mirrors runPartyPanelRead's active-floor
+ * gate. Within the gated window, fires every ~AUTO_PEEK_INTERVAL_TICKS
+ * (~1.8 s).
+ *
+ * Two-stage capture for CPU efficiency:
+ *   Stage 1 (every probe tick): bind a narrow X-clipped column
+ *     (~520 px wide × full RS height) covering the title region only.
+ *     Run peekForWinterface on this small bind. Most probe ticks bottom
+ *     out here — no winterface present, no further work.
+ *   Stage 2 (only on peek-hit ≥ AUTO_PEEK_HIT_THRESHOLD): re-bind full
+ *     RS so timer-digit OCR (TIMER_OFFSET.dy = 321 px below title,
+ *     outside the title band) can reach pixels outside the stage-1
+ *     region. captureEndDungeonTimer re-peeks internally for
+ *     RS-absolute anchor coords.
+ *
+ * Why X-clipped column with full RS height (and not Y-clipped band):
+ * peekForWinterface uses screen.height * 0.15 / 0.55 internally to
+ * scope its Y scan. If we Y-clipped the bind, those fractions would
+ * map to the wrong physical Y range and the peek would miss the title.
+ * Keeping full height preserves the existing fraction math; X-clip
+ * alone gives a meaningful pixel-data reduction per probe tick.
+ *
+ * `cur.ended` is INTENTIONALLY left unguarded: floors closed via the
+ * Tier-2 outfit-bonus chat line carry `ended=true && time=null`, and we
+ * still want to recover the timer if the winterface is on screen.
+ *
+ * `nextAutoPeekTick` advances AFTER the gate, so the first probe after a
+ * floor-start fires immediately — no missed-timer risk from gate latency.
+ *
+ * Floor state is mutated ONLY on OCR success (inside fireAutoProbe) —
+ * prevents false-positive peeks from spuriously ending an ongoing floor.
  */
 function runAutoWinterfaceProbe() {
   if (!window.alt1 || !alt1.permissionPixel) return;
   if (tickCount < nextAutoPeekTick) return;
-  nextAutoPeekTick = tickCount + AUTO_PEEK_INTERVAL_TICKS;
 
   const cur = floor.current();
-  // Short-circuit when the current floor already has its timer — nothing
-  // to do until the next floor-start flips cur.time back to null. We
-  // deliberately DO NOT early-exit on !cur here: the peek still runs so
-  // we can emit the mid-dungeon-boot hint below when a winterface is
-  // visible but no floor-start has been captured.
-  if (cur && cur.time) return;
+  if (!cur || cur.time) return;
+  nextAutoPeekTick = tickCount + AUTO_PEEK_INTERVAL_TICKS;
 
-  let screen;
-  try { screen = a1lib.captureHoldFullRs(); }
+  // Stage 1: narrow X-clipped column bind (full RS height) for the
+  // cheap peek. Most probe ticks land here and bail at the threshold
+  // check below — no further bind, no OCR work.
+  const cx = Math.floor(alt1.rsWidth / 2);
+  const peekX0 = Math.max(0, cx - 260);
+  const peekW = Math.min(520, alt1.rsWidth - peekX0);
+  let probeScreen;
+  try { probeScreen = a1lib.captureHold(peekX0, 0, peekW, alt1.rsHeight); }
   catch (_) { return; }
-  if (!screen) return;
+  if (!probeScreen) return;
 
   let peek = null;
-  try { peek = peekForWinterface(screen); }
+  try { peek = peekForWinterface(probeScreen); }
   catch (_) { peek = null; }
   if (!peek || peek.hits < AUTO_PEEK_HIT_THRESHOLD) return;
+
+  // Stage 2: peek confirmed winterface present. Re-bind full RS so
+  // timer-digit OCR can reach pixels outside the title band. Stage 2
+  // fires roughly once per floor (the actual floor-end moment), so the
+  // full-bind cost here is amortised across many cheap stage-1 ticks.
+  let fullScreen;
+  try { fullScreen = a1lib.captureHoldFullRs(); }
+  catch (_) { return; }
+  if (!fullScreen) return;
 
   // Record the runtime detection so the Settings → Calibration
   // → Winterface status row can show freshness-based ✓/⚠ even
   // when the user hasn't locked an anchor via the Calibrate button.
   _winterfaceLastDetectedAt = Date.now();
 
-  if (!cur) {
-    // Peek cleared the threshold but we have nowhere to attach the timer
-    // because no floor-start banner was ever captured for this run (plugin
-    // booted mid-dungeon, or banner OCR was missed). One-shot log per
-    // no-floor streak — resets on the normal-path branch below so the
-    // hint can fire again if the no-floor state recurs.
-    if (!_loggedMidDungeonBootHint) {
-      _loggedMidDungeonBootHint = true;
-      dbg('info',
-        'winterface peek hit but no active floor \u2014 plugin likely started '
-        + 'mid-dungeon; this floor\u2019s timer can\u2019t be captured, '
-        + 'next floor-start banner will re-arm the pipeline.');
-    }
-    return;
-  }
-
-  _loggedMidDungeonBootHint = false;
-  fireAutoProbe(screen);
+  fireAutoProbe(fullScreen);
 }
 
 function fireAutoProbe(screen) {

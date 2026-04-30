@@ -10,9 +10,10 @@ You're continuing work on the DungKey Tracker Alt1 plugin. Read [HANDOFF.md](HAN
 - Phase 1 — Calibration smoothness — VERIFIED & SHIPPED 2026-04-29. Heavy-work pause + `renderCalibrationStatus` clobber guard + countdown UX polish.
 - Phase 2 — Profiling instrumentation — VERIFIED 2026-04-30. Lightweight always-on perf line in debug log, once per minute. First data point flagged chat OCR as the dominant CPU consumer (~195 ms avg per tick when idle outside a dungeon).
 - Phase 3 — Targeted reductions — Confirmed scope item (RoK cheap pixel re-verification + provisional timestamp bump) VERIFIED 2026-04-30. Banner no longer flickers during a floor; open-panel-mid-floor lag dropped from ~6 s to ~3 s.
-- Phase 4 — Slow-CPU verification — READY. **Current phase.** Push to main + ask original slow-CPU testers to retest.
+- Phase 4 — Slow-CPU verification — READY. Push to main + ask original slow-CPU testers to retest.
+- Phase 5 — Winterface auto-probe reduction — VERIFIED 2026-04-30. Active-floor gate + two-stage capture (cheap region bind for peek, full bind only on confirmed peek hit). User-felt-instant winterface registration on test deploy. Empirical evidence that `alt1.bindRegion` cost is meaningfully region-proportional.
 
-**Next move:** push the in-flight commits to main (Netlify auto-deploys), then user pings the original slow-CPU testers. If verified → project complete. If not → re-examine Phase 3 candidates (chat OCR delta-hash is the obvious next target per Phase 2 data).
+**Current direction:** Phase 6 candidate — full-screen capture audit. The Phase 5 result implies every other periodic `captureHoldFullRs()` caller in the plugin is paying for pixels it never reads. Top candidate: `cheapPanelStillPresent` (every tick, full bind for a 30×3 region read). See OPTIMIZATION.md Phase 6 section for the enumeration.
 
 **Pre-profile candidates remaining for future iteration** (only if Phase 4 reveals more lag):
 - Chat OCR delta-hash (highest-value per Phase 2 data — 84% of total tick CPU is `reader.read()`).
