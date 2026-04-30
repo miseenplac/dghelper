@@ -905,6 +905,15 @@ if (tabSettingsBtn)    tabSettingsBtn.addEventListener('click',    () => setActi
 const ROK_WARN_STALE_MS = 5000;
 let _lastPartyPanelDetectedAt = 0;
 
+// Cached origin from the most recent CONFIRMED full-OCR detection.
+// While set, runPartyPanelRead's per-tick fast path samples pixels at
+// these coordinates (cheap red-classifier check) instead of running
+// the heavy OCR every 30 ticks. Bumps _lastPartyPanelDetectedAt on
+// each pass so the RoK warning banner doesn't blip during the OCR
+// re-confirmation gap. Cleared when the cheap check fails OR when the
+// not-found UI-clear hysteresis crosses PANEL_UI_CLEAR_THRESHOLD.
+let _panelStableOrigin = null;
+
 function updateRokWarning() {
   const banner = document.getElementById('rok-warning');
   if (!banner) return;
@@ -1891,6 +1900,63 @@ let tickCount = 0;
 let warnedNoPixel = false;
 let loggedFound = false;
 
+// Phase 2 — perf instrumentation. Always-on lightweight CPU profiling
+// for the optimization push. Per-subsystem ms accumulators emit one
+// debug-log line per minute showing avg/max across the window. Ticks
+// that early-return (no alt1 / chatbox not found / _calActive) skip
+// measurement so the averages reflect real work, not stalls.
+//
+// Cost when running: ~7 performance.now() calls/tick, sub-microsecond
+// each. Negligible. The user's "lightweight, productive" framing is
+// the design constraint — no Settings toggle, no UI surface.
+//
+// REMOVE AT PROJECT COMPLETION (see OPTIMIZATION.md Phase 4). This is
+// scaffolding, not a permanent feature. Two reasons it must be torn
+// out once the optimization project is verified done:
+//   1. It adds CPU work itself — measurements + emit — which is the
+//      exact thing the project exists to reduce. Leaving scaffolding
+//      in place erodes the gains it helped achieve.
+//   2. It's diagnostic-only; the debug-log line has no use to end
+//      users and clutters the panel for non-perf debugging.
+// The debug panel infrastructure itself stays (it carries OCR /
+// self-pin / parser diagnostics unrelated to this push). Only this
+// block, the 5 in-tick measurement pairs, and the dbg('info','perf:…')
+// emit get removed. Grep `_perf` (helpers + state + record calls) and
+// `T0 = performance.now()` (7 timing captures inside tick) to locate
+// every removal target.
+const PERF_EMIT_INTERVAL_TICKS = 600; // ~60 s wall at 100 ms tick
+const PERF_BUCKETS = ['chatRead', 'parser', 'pin', 'panel', 'dgmap', 'overlay', 'total'];
+let _perfStats = _perfFreshBuckets();
+let _perfNextEmitTick = PERF_EMIT_INTERVAL_TICKS;
+
+function _perfFreshBuckets() {
+  const o = {};
+  for (const k of PERF_BUCKETS) o[k] = { sum: 0, count: 0, max: 0 };
+  return o;
+}
+
+function _perfRecord(bucket, ms) {
+  const s = _perfStats[bucket];
+  s.sum += ms;
+  s.count += 1;
+  if (ms > s.max) s.max = ms;
+}
+
+function _perfEmitMaybe() {
+  if (tickCount < _perfNextEmitTick) return;
+  _perfNextEmitTick = tickCount + PERF_EMIT_INTERVAL_TICKS;
+  const fmt = (b) => {
+    const s = _perfStats[b];
+    if (!s) return `${b}=?/?`; // bucket missing from PERF_BUCKETS — emit placeholder rather than crash the plugin
+    if (s.count === 0) return `${b}=-/-`;
+    return `${b}=${(s.sum / s.count).toFixed(1)}/${s.max.toFixed(1)}`;
+  };
+  dbg('info',
+    `perf: ${fmt('chatRead')} ${fmt('parser')} ${fmt('pin')} ${fmt('panel')} ${fmt('dgmap')} ${fmt('overlay')} ${fmt('total')} ` +
+    `(ms, avg/max over ${PERF_EMIT_INTERVAL_TICKS} ticks)`);
+  _perfStats = _perfFreshBuckets();
+}
+
 // Floor END is detected three ways, in order of preference:
 //   1. Auto-probe winterface: sparse-pixel peek fires every ~1.8s looking
 //      for the end-dungeon title banner. Rising edge (null → hit) triggers
@@ -2140,6 +2206,53 @@ function panelDetectionMatches(prev, curr) {
   return prevFilled === currFilled;
 }
 
+// Cheap pixel-level re-verification of a previously confirmed panel.
+// Scans a 30×3 box around the cached origin and counts pixels passing
+// the red classifier. Threshold >= 3 hits — mirrors hasSlotColor's
+// pattern in partyPanel.js (the proven-robust shape for "is this colour
+// still here at this region"). 30 px width matches MIN_SLOT1_CLUSTER_
+// WIDTH so the box reliably spans slot-1's red name text even when
+// origin lands at the cluster's left edge; 3 rows absorb sub-pixel y
+// jitter. Anti-aliased letter rendering has plenty of red pixels here;
+// world geometry under a closed panel typically doesn't.
+//
+// Earlier 3-single-pixel version flickered: anti-aliased letters have
+// near-black gaps between glyphs, so fixed-offset sampling could miss
+// most strokes and fall below threshold even with the panel right
+// there. Region-scan + hit-count is way more tolerant.
+//
+// Cost: a1lib.captureHoldFullRs() handle + one screen.toData() of
+// 30×3 px (360 bytes) + up to 90 RGB classifier evals (early-returns
+// on hit 3). Microseconds.
+function cheapPanelStillPresent(origin) {
+  if (!window.alt1 || !alt1.permissionPixel) return false;
+  let screen;
+  try { screen = a1lib.captureHoldFullRs(); }
+  catch (_) { return false; }
+  if (!screen) return false;
+  const W = 30, H = 3;
+  const x0 = Math.max(0, origin.x - 5);
+  const y0 = Math.max(0, origin.y - 1);
+  let data;
+  try { data = screen.toData(x0, y0, W, H); }
+  catch (_) { return false; }
+  if (!data) return false;
+  let hits = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const px = data.getPixel(x, y);
+      if (!px) continue;
+      const r = px[0], g = px[1], b = px[2];
+      // Same gate as classifySlotColor()'s 'red' branch in partyPanel.js.
+      if (r > 60 && g < 60 && b <= 10 && r > g && r > b * 2) {
+        hits++;
+        if (hits >= 3) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // ---- Pixel-based leave-party detection (for slot-assignment auto-clear) ----
 // White "You leave the party" chat text is unreliable to OCR, so we can't
 // depend on the parser-level leave-party event to auto-clear slot
@@ -2188,6 +2301,24 @@ function runPartyPanelRead() {
   // floor-start until the panel is confirmed-detected again.
   const cur = floor.current();
   if (!cur || cur.ended) return;
+
+  // Cheap pixel re-verification fast path. While we have a confirmed
+  // origin from a previous OCR detection AND the cached pixels still
+  // pass the red classifier, skip the heavy OCR cadence and just bump
+  // the warning timestamp. Resolves the RoK banner flicker (cheap
+  // check fills the gap between OCR cycles) and saves OCR CPU while
+  // the panel is steady-state. On failure (cursor moved off slot 1,
+  // panel closed, panel dragged elsewhere), clear the cache and fall
+  // through to the existing OCR cadence which will re-confirm or
+  // eventually clear via the absence-streak machinery.
+  if (_panelStableOrigin) {
+    if (cheapPanelStillPresent(_panelStableOrigin)) {
+      _lastPartyPanelDetectedAt = Date.now();
+      return;
+    }
+    _panelStableOrigin = null;
+  }
+
   if (tickCount < nextPartyTick) return;
   nextPartyTick = tickCount + PARTY_INTERVAL_TICKS;
 
@@ -2225,6 +2356,7 @@ function runPartyPanelRead() {
     if (_lastPartyPanelResult && _lastPartyPanelResult.found &&
         _panelAbsentStreak >= PANEL_UI_CLEAR_THRESHOLD) {
       _lastPartyPanelResult = null;
+      _panelStableOrigin = null;
       renderPartySlots(null);
     }
 
@@ -2307,19 +2439,33 @@ function runPartyPanelRead() {
   };
   if (!panelDetectionMatches(_provisionalPanel, res)) {
     // First time seeing this (or it differs from provisional) — record
-    // as new provisional and wait for the next tick to confirm. Don't
-    // log or render yet.
+    // as new provisional and wait for the next tick to confirm. State
+    // mutations (slot UI, party size, self-slot, cache) still wait for
+    // confirmation below — only the warning timestamp bumps here, so
+    // open-the-panel-during-floor → banner-clears latency drops from
+    // worst-case ~6 s (one cadence + one confirmation cycle) to ~3 s
+    // (one cadence). World-fluke single-tick false-positive cost: the
+    // banner clears for ~5 s (ROK_WARN_STALE_MS) before re-appearing
+    // when the next OCR fails to confirm. Acceptable per the existing
+    // comments noting flukes are rare (1-2 per session at most).
     _provisionalPanel = currentKey;
+    _lastPartyPanelDetectedAt = Date.now();
     return;
   }
   // Confirmed — two consecutive matching detections. Update provisional
   // to the current (so subsequent ticks continue to confirm against it).
   _provisionalPanel = currentKey;
 
-  // Mark the moment of confirmed panel detection — drives the RoK warning
-  // banner (Tracker/Floors tabs). Updated only on confirmed detection (not
-  // provisional) so a one-tick fluke doesn't dismiss the warning.
+  // Re-bump the warning timestamp on confirmed detection too. Provisional
+  // path bumped it 3 s ago; this keeps the cadence smooth from then on
+  // even if the cheap-check cache below isn't established yet.
   _lastPartyPanelDetectedAt = Date.now();
+
+  // Cache the confirmed origin for the per-tick cheap pixel re-verification
+  // fast path at the top of this function. Set only after the temporal-
+  // confirmation gate passes — same world-fluke false-positive protection
+  // as everything else here.
+  _panelStableOrigin = { x: res.origin.x, y: res.origin.y };
 
   // Cache + render on every successful (confirmed) read. Debug logging
   // is still state-change-deduped below.
@@ -2755,6 +2901,12 @@ function tick() {
   // keep running so the user still sees a live heartbeat in debug stats.
   if (_calActive) return;
 
+  // Phase 2 perf — start the per-tick wall-clock timer. Placed after the
+  // _calActive early-return so calibration ticks don't pollute averages.
+  // Ticks that early-return below (chatbox not found, read() throws)
+  // never reach _perfEmitMaybe at end of tick — accumulators stay clean.
+  const _tickT0 = performance.now();
+
   if (!reader) {
     setupReader();
     dbg('info', `reader created with ${reader.readargs.colors.length} colours`);
@@ -2786,13 +2938,22 @@ function tick() {
 
   let lines;
   try {
+    const _chatReadT0 = performance.now();
     lines = reader.read() || [];
+    _perfRecord('chatRead', performance.now() - _chatReadT0);
   } catch (e) {
     console.warn('[dkt] chatbox read failed', e);
     dbg('error', 'read() threw: ' + (e && e.message ? e.message : e));
     renderStatus('Chatbox read failed: ' + (e && e.message ? e.message : e));
     return;
   }
+
+  // Phase 2 perf — parser/pin split. _parserT0 wraps the for-loop +
+  // dedupe cleanup. _pinTotal accumulates door-info self-pin cascade
+  // time across iterations; subtracted from parser at record time so
+  // the buckets don't double-count.
+  const _parserT0 = performance.now();
+  let _pinTotal = 0;
 
   if (lines.length > 0) {
     console.log(`[dkt] read() returned ${lines.length} line(s):`);
@@ -2960,6 +3121,7 @@ function tick() {
         //      PIXELS for the self triangle.
         //   3. Cached _latestDgMap — last resort, 30s staleness gate.
         if (ev.type === 'door-info' && isSelfEvent(ev)) {
+          const _pinT0 = performance.now();
           const selfColor = getSelfColor();
 
           // Multi-party without detected self-slot: surface a one-shot
@@ -3150,6 +3312,7 @@ function tick() {
               `Top-3 ${selfColor} counts in ${searchSource === 'none' ? 'cache' : searchSource}: ${topStr}`);
           }
           }
+          _pinTotal += performance.now() - _pinT0;
         }
 
         ev.at = Date.now();
@@ -3172,6 +3335,8 @@ function tick() {
     seenEvents.clear();
     arr.slice(-250).forEach(s => seenEvents.add(s));
   }
+  _perfRecord('pin', _pinTotal);
+  _perfRecord('parser', performance.now() - _parserT0 - _pinTotal);
 
   // Auto-probe runs AFTER chat processing so floor-start events fired this
   // tick have already been applied to `floor.current()` by the time the
@@ -3179,10 +3344,14 @@ function tick() {
   runAutoWinterfaceProbe();
 
   // Party panel reader (milestone A: debug-log only, no state mutation).
+  const _panelT0 = performance.now();
   runPartyPanelRead();
+  _perfRecord('panel', performance.now() - _panelT0);
 
   // DG map reader (Phase 1b.1: debug-log only, three-state locator).
+  const _dgmapT0 = performance.now();
   runDgMapRead();
+  _perfRecord('dgmap', performance.now() - _dgmapT0);
 
   // Opt-in: lightweight triangle snapshot for chat-timestamp matching.
   // No-ops when settings.timestampedChat is false.
@@ -3195,11 +3364,20 @@ function tick() {
   // dispatch above, which attaches cellCoords to events that fire in
   // solo mode. Tracker holds the pin until the matching key is used,
   // so overlay follows the tracker's state automatically.
+  const _overlayT0 = performance.now();
   drawPinnedOverlays();
+  _perfRecord('overlay', performance.now() - _overlayT0);
 
   // RoK warning banner — re-evaluates floor-active + panel-staleness on
   // every tick. Cheap (DOM read/write only).
   updateRokWarning();
+
+  // Phase 2 perf — record the full-tick wall-clock + emit if the window
+  // is up. The total includes runAutoWinterfaceProbe / runTriangleSnapshot
+  // / updateRokWarning which aren't broken out individually, so if
+  // chat+panel+dgmap+overlay << total, that gap is in those subsystems.
+  _perfRecord('total', performance.now() - _tickT0);
+  _perfEmitMaybe();
 }
 
 // Refresh the overlay's frozen origin/pitch anchor only when new map

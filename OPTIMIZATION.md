@@ -8,6 +8,8 @@ Multi-phase plan to reduce plugin CPU load on lower-end machines while preservin
 
 **NON-GOAL:** change any user-visible behaviour. No feature changes, no detection-accuracy regressions, no UX deltas. Identical functionality, lower CPU.
 
+**Scope:** comprehensive efficiency review. Every subsystem is in scope, not just the named candidates in Phase 3. The pre-profile candidate list is starting orientation, not a ceiling — anything in the codebase that's wasting CPU is fair game during this push.
+
 **Acceptance:** at least one tester on a low-end CPU reports the plugin feels responsive — calibration UI smooth, no felt stutter during active floor.
 
 ## Core principle (apply to every future change)
@@ -19,7 +21,7 @@ Every code change — in this project AND in the plugin generally — must answe
 - `CPU: neutral — cosmetic reorder, same number of operations.`
 - `CPU: slight increase (~+1 DOM write/s), justified by UX win [reason].`
 
-If a change adds CPU cost, justify explicitly. If it reduces, note by how much (rough estimate is fine). If unsure, profile first.
+If a change adds CPU cost, justify explicitly. If it reduces, note by how much (rough estimate is fine). If genuinely unsure after reasoning, surface for discussion before shipping.
 
 This principle is broader than the OPTIMIZATION project's phases — it's the lens for every PR/commit going forward.
 
@@ -28,9 +30,9 @@ This principle is broader than the OPTIMIZATION project's phases — it's the le
 Intentionally vague at this point — these will sharpen as we learn. Each phase has its own detailed status line below; keep both in sync when updating.
 
 - **Phase 1 — Calibration smoothness** — VERIFIED & SHIPPED 2026-04-29. Heavy-work pause + clobber guard + countdown UX polish (5 s timer, skip-0s frame).
-- **Phase 2 — Profiling instrumentation** — NOT STARTED
-- **Phase 3 — Targeted reductions** — Confirmed scope item ready (RoK pixel re-verification, data-independent); pre-profile candidates BLOCKED on Phase 2 data
-- **Phase 4 — Slow-CPU verification** — BLOCKED on Phases 1-3
+- **Phase 2 — Profiling instrumentation** — VERIFIED 2026-04-30. Lightweight always-on perf line in debug log, once per minute. Confirmed emitting clean lines on user's machine; first data point flagged chat OCR (`reader.read()`) as the dominant CPU consumer.
+- **Phase 3 — Targeted reductions** — VERIFIED 2026-04-30. RoK cheap pixel re-verification (Solution F) shipped — banner no longer flickers on/off during a floor; OCR is skipped while the cached origin's red pixels still pass the classifier. Provisional-bump tweak halved open-the-panel-during-floor latency from ~6 s to ~3 s.
+- **Phase 4 — Slow-CPU verification** — READY. Push to main + ask original slow-CPU testers to retest.
 
 ---
 
@@ -100,33 +102,82 @@ Plus: the `_calActive` declaration was moved above the first synchronous `render
 
 ## Phase 2 — Profiling instrumentation
 
-**Status:** NOT STARTED. Begins after Phase 1 sign-off.
+**Status:** VERIFIED 2026-04-30. Code landed, built clean, perf line confirmed emitting on user's machine.
 
-**Objective:** get hard data on where CPU goes per tick so Phase 3 targets the actual hot paths, not guesses.
+### Outcome (2026-04-30)
 
-**Approach (initial sketch — refine on pickup):**
-- Wrap heavy tick subsystems with timing: chat OCR, panel scan, dg map scan, overlay redraw. Use `Date.now()` / `performance.now()` deltas — no fancy profiling library.
-- Aggregate ms/tick over a rolling window (e.g., last 50 ticks).
-- Emit one debug-channel line every N ticks (~10 s of wall time): `perf: chat=X panel=Y dgmap=Z overlay=W total=T (ms)`.
-- Gate behind a Settings toggle "Show perf telemetry" so it's off by default and zero-cost when off.
+**First data point** (user idle outside a dungeon, ~150 s wall window):
+```
+perf: chatRead=195.1/1160.0 parser=0.1/1.9 pin=0.0/0.0 panel=6.0/184.3 dgmap=5.9/183.3 overlay=0.0/0.4 total=299.9/2490.5 (ms, avg/max over 600 ticks)
+```
+
+**Key findings:**
+- Chat block (`reader.read()` Alt1 OCR) dominates by orders of magnitude — 195 ms avg per tick, 84% of total tick CPU. Tick is running back-to-back at ~4 Hz instead of idling at 10 Hz between fires.
+- `parser` and `pin` near-zero as expected when idle (no chat lines, no door-info events).
+- `panel` and `dgmap` modest at ~6 ms avg (mostly cadence-gated early-returns; max ~180 ms is the per-OCR-run cost).
+- `overlay` is negligible.
+
+**Iteration history:**
+1. Initial implementation had a single `chat` bucket lumping `reader.read()` + parser loop + door-info self-pin cascade together. 215 ms avg was hard to interpret without splitting.
+2. Split `chat` into `chatRead` / `parser` / `pin` so the dominant cost could be isolated. Confirmed `reader.read()` is the hot path.
+3. **Bug fix:** when splitting `PERF_BUCKETS`, the emit-line template still referenced the old `chat` bucket name → `fmt('chat')` returned undefined → crash on first emit (~1 minute after Ctrl+R). Fixed: updated template to new bucket names + added a defensive guard in `fmt` so a future bucket-name typo can't crash the plugin again.
+
+**Implication for Phase 3:** chat OCR delta-hash (skip OCR when chatbox region pixels unchanged from last tick) is the highest-value pre-profile candidate. Confirmed empirically, not just by reasoning.
+
+**REMOVE AT PROJECT COMPLETION reminder:** the perf code is scaffolding. Both because (1) it adds CPU work itself, contradicting the project goal, and (2) it's diagnostic-only with no user value. Grep `_perf` + `T0 = performance.now()` to find every removal target. The debug panel infrastructure stays.
+
+**Decision history:** the original Phase 2 plan was a Settings-gated profiling toggle. That was reconsidered (2026-04-30): a Settings toggle is the wrong frame for diagnostics-only instrumentation, and per-change CPU impact is already decidable by reasoning + HANDOFF rule #6 — so a heavy gate is overkill. We briefly marked Phase 2 SKIPPED on that basis. User then course-corrected: profile data IS valuable as a baseline (regression detection, before/after numbers on Phase 3 ships), just not behind a Settings toggle and not as a strict per-change gate. Final shape below reflects that: lightweight, always-on, no UI surface.
+
+**What landed:**
+- `_perfStats` accumulator with 5 buckets (`chat`, `panel`, `dgmap`, `overlay`, `total`). Each bucket holds `{sum, count, max}`.
+- 4 measurement points wrapping `performance.now()` deltas around chat OCR + parser, `runPartyPanelRead()`, `runDgMapRead()`, `drawPinnedOverlays()`. The `total` bucket times the full tick body (post-early-returns).
+- Always-on. Skips ticks that early-return before the full work runs (no alt1, chatbox not found, `_calActive`) so averages reflect real work, not stalls.
+- Emits one debug-log line every 600 ticks (~60 s wall at 100 ms tick) via `dbg('info', 'perf: chat=avg/max panel=avg/max dgmap=avg/max overlay=avg/max total=avg/max (ms, …)')`.
+- Buckets reset on each emit — each line represents the most recent minute, not a session-cumulative average.
+- No Settings toggle. No flag.
+
+**Self-overhead audit:** ~5 `performance.now()` calls/tick, sub-microsecond each. Negligible against the ms-scale subsystem times being measured. If the reported `total` ever shows a meaningful jump after this lands, the instrumentation itself is the suspect.
+
+**How to read the line:**
+- `chat=2.1/8.4` means: across the last minute, chat OCR + parser averaged 2.1 ms per tick, with the worst single tick at 8.4 ms.
+- If `chat+panel+dgmap+overlay << total`, the gap is in unmeasured subsystems (`runAutoWinterfaceProbe`, `runTriangleSnapshot`, `updateRokWarning`).
+- Per-subsystem buckets count EVERY tick that reached the relevant call site, including the cadence-gated early-returns inside `runPartyPanelRead` / `runDgMapRead`. So the avg reflects per-tick CPU pressure, not per-actual-OCR-run cost. Max is the real heavy-work cost.
 
 **Acceptance:**
-- Telemetry lines visible in debug log when toggle is on.
-- Instrumentation overhead itself <1 ms/tick (verify by toggling and comparing total).
-- No behaviour change when toggle is off.
+- `perf:` lines appear in the debug panel approximately once per minute.
+- No regression in any tracker behaviour — instrumentation is purely additive (timing wrappers + accumulator + emit).
+- Total reads aren't wildly higher than the sum of measured subsystems (sanity check on instrumentation overhead).
 
-**Open questions for whoever picks this up:**
-- Where does the toggle live — under existing Diagnostics, or a new Performance subsection?
-- Rolling window: per-subsystem circular buffer, or single bucket reset on emit?
-- Should we capture per-tick max alongside the average? (Spike detection.)
+**Implication for Phase 3:** pre-profile candidates aren't a hard gate on profile data, but the perf line IS available as a passive baseline. Standard practice for each Phase 3 ship: capture a `perf:` line before and after, include the delta in the commit message alongside the reasoning-based CPU-impact note (HANDOFF rule #6).
 
 ---
 
 ## Phase 3 — Targeted reductions
 
-**Status:** Mixed. Confirmed scope item below (RoK cheap pixel re-verification) is data-independent — motivated by a known UX bug, not by profile data, so it can land any time Phase 3 is opened. Pre-profile candidates remain BLOCKED on Phase 2 data.
+**Status:** Confirmed scope item (RoK cheap pixel re-verification) VERIFIED 2026-04-30 — see Outcome below. Pre-profile candidates follow; chat OCR delta-hash is the highest-value next move per Phase 2 data. Each ship should include before/after `perf:` lines from the Phase 2 instrumentation as supporting data alongside the reasoning-based CPU-impact note.
 
-**Objective:** apply optimizations to the 1-2 biggest consumers identified by profile data, plus the confirmed scope items below.
+### Outcome — RoK cheap pixel re-verification (2026-04-30)
+
+**What landed:**
+- New `cheapPanelStillPresent(origin)` helper in [src/index.js](src/index.js) — scans a 30×3 px region around the cached origin, counts pixels passing the same red classifier the OCR uses (`r > 60 && g < 60 && b <= 10 && r > g && r > b * 2`), returns true on ≥3 hits. Microsecond cost.
+- New `_panelStableOrigin` state — set to `{x, y}` after confirmed temporal-confirmation, cleared on cheap-check failure or absence-streak crossing `PANEL_UI_CLEAR_THRESHOLD`.
+- `runPartyPanelRead` fast path: while `_panelStableOrigin` is set and the cheap check passes, skip the OCR cadence entirely and just bump `_lastPartyPanelDetectedAt`. Banner stays clear.
+- **Provisional timestamp bump** (added 2026-04-30 after initial ship): `_lastPartyPanelDetectedAt` now also bumps on the first provisional OCR detection, not just after temporal-confirmation. Halves the open-the-panel-during-floor → banner-clears latency from ~6 s (one cadence + one confirmation cycle) to ~3 s (one cadence). State mutations still gated by confirmation. Updated HANDOFF invariant #13 to reflect.
+
+**Iteration history:**
+1. Initial cheap check sampled 3 single pixels at offsets +0, +5, +10 from origin with 2/3 hit threshold. Worked outside floors but flickered inside floors: anti-aliased letter rendering has near-black gaps between glyphs, so fixed-offset sampling could fall below threshold even with the panel present, dropping back to OCR cadence and re-creating the original flicker.
+2. Swapped to 30×3 region scan with ≥3 hit threshold (mirrors `hasSlotColor`'s pattern in partyPanel.js). Robust against sub-pixel jitter, anti-aliasing gaps, and minor cursor occlusion. User confirmed flicker resolved.
+3. User flagged 6 s lag when opening the panel mid-floor. Added the provisional-bump tweak above to halve it. Trade-off (world-fluke single-tick false-positive could clear the banner for ~5 s before re-appearing) accepted given fluke rarity.
+
+**CPU impact:**
+- Net reduction during steady-state play with panel open. Today panel bucket avg = 6 ms/tick (mostly the once-per-3 s OCR amortized across 30 ticks). With cache valid + cheap check passing, OCR is skipped → that 6 ms/tick avg drops to near-zero. Cheap check itself is microseconds.
+- Modest in absolute terms — panel isn't the dominant consumer (chat is). The flicker fix is the primary win; CPU saving is the bonus.
+
+**Touchpoints:** [src/index.js](src/index.js) `runPartyPanelRead`, `panelDetectionMatches`, `cheapPanelStillPresent` (new), `_panelStableOrigin` (new state); [HANDOFF.md](HANDOFF.md) invariant #13.
+
+**Acceptance:** banner doesn't flicker during a floor with panel open ✓, banner clears within ~3 s of opening the panel mid-floor ✓, slot rendering / party size / self-slot detection unchanged ✓.
+
+**Objective:** apply optimizations to the 1-2 biggest consumers (identified by reasoning + Phase 2 perf-line baseline), plus the confirmed scope items below.
 
 ### Confirmed scope item — Cheap pixel re-verification for RoK panel detection
 
@@ -158,7 +209,7 @@ F was preferred for being the only option that delivers BOTH the flicker fix AND
 
 ---
 
-**Pre-profile candidates** (orientation only — DO NOT act on these without profile data first; we'll likely be wrong about which matters most):
+**Pre-profile candidates** (tackled by reasoning + the CPU-impact principle question, with the Phase 2 perf line as a passive baseline; attack whichever subsystem the perf line shows is heaviest):
 
 - **Chat OCR delta-hash.** Skip OCR when the chatbox region pixels are unchanged from last tick. Only OCR when a hash of the region differs.
 - **Adaptive tick rate.** Drop master cadence to 5 Hz when idle (no active floor, no recent chat event). Stay at 10 Hz during active floor.
@@ -166,15 +217,16 @@ F was preferred for being the only option that delivers BOTH the flicker fix AND
 - **Shared screen capture per tick.** If multiple subsystems each call `captureHoldFullRs()` independently, do one capture per tick and pass the buffer to all consumers.
 
 **Working pattern for each reduction:**
-1. Land as its own commit with before / after profile numbers in the commit message.
-2. Re-run Phase 2 profile to verify the metric actually moved.
-3. Regression pass: calibration + a real floor + party-panel detection. Confirm zero functionality change before moving on.
+1. Capture a baseline `perf:` line before any change (let it run a couple of minutes for stability).
+2. Land as its own commit. Commit message must include the CPU impact note (HANDOFF rule #6) — reasoning-based, with the perf-line delta cited as supporting evidence.
+3. Capture an after-change `perf:` line, confirm the targeted subsystem actually moved.
+4. Regression pass: calibration + a real floor + party-panel detection. Confirm zero functionality change before moving on.
 
 ---
 
 ## Phase 4 — Slow-CPU verification
 
-**Status:** BLOCKED on Phases 1-3.
+**Status:** READY 2026-04-30. Phases 1-3 all verified locally; awaiting push to main + slow-CPU tester retest.
 
 **Objective:** confirm the felt-experience improvement on a real low-end machine.
 
@@ -182,7 +234,7 @@ F was preferred for being the only option that delivers BOTH the flicker fix AND
 - Once Phases 1-3 are merged, push to `main`. Netlify auto-deploys in ~60-90 s.
 - User asks the testers who originally reported lag to retest.
 - Verified → project complete.
-- Not verified → re-profile on the slow CPU (Phase 2 telemetry can stay live), iterate Phase 3.
+- Not verified → re-examine Phase 3 candidates (revisit the reasoning, consider candidates we deferred), iterate.
 
 ---
 
