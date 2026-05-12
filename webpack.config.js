@@ -2,7 +2,9 @@ const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
 
-module.exports = {
+module.exports = (env, argv) => {
+  const isDev = argv.mode === 'development';
+  return {
   entry: './src/index.js',
   output: {
     filename: 'bundle.[contenthash].js',
@@ -29,7 +31,17 @@ module.exports = {
     new HtmlWebpackPlugin({ template: './src/index.html', title: 'dghelper' }),
     new CopyWebpackPlugin({
       patterns: [
-        { from: 'appconfig.json', to: '.' },
+        {
+          from: 'appconfig.json',
+          to: '.',
+          transform: isDev
+            ? (content) => {
+                const cfg = JSON.parse(content.toString());
+                cfg.appName = `${cfg.appName} (dev)`;
+                return JSON.stringify(cfg, null, 2);
+              }
+            : undefined
+        },
         { from: 'install.html', to: '.' },
         { from: 'icon.png', to: '.', noErrorOnMissing: true },
         { from: '_headers', to: '.' }
@@ -44,4 +56,5 @@ module.exports = {
     hot: true,
     headers: { 'Access-Control-Allow-Origin': '*' }
   }
+  };
 };
