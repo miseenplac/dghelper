@@ -137,7 +137,14 @@ const STATUS_CLEAR_MS = 4000;
 const SETTINGS_KEY = 'dgh:settings:v2';
 const CALIBRATION_KEY = 'dgh:cal:winterface:v3';
 
-const settings = { maxFloors: floor.getMaxFloors() };
+const FLOORS_AVG_WINDOW_DEFAULT = 11;
+const HEADER_TITLE_MAX_LEN = 40;
+
+const settings = {
+  maxFloors: floor.getMaxFloors(),
+  avgWindow: FLOORS_AVG_WINDOW_DEFAULT,
+  headerTitle: '',
+};
 let _calibration = null;
 
 function loadSettings() {
@@ -148,6 +155,12 @@ function loadSettings() {
     if (typeof parsed.maxFloors === 'number') {
       settings.maxFloors = parsed.maxFloors;
       floor.setMaxFloors(parsed.maxFloors);
+    }
+    if (typeof parsed.avgWindow === 'number' && parsed.avgWindow >= 2) {
+      settings.avgWindow = Math.min(100, Math.floor(parsed.avgWindow));
+    }
+    if (typeof parsed.headerTitle === 'string') {
+      settings.headerTitle = parsed.headerTitle.slice(0, HEADER_TITLE_MAX_LEN);
     }
   } catch (_) {}
 }
@@ -349,8 +362,6 @@ function startPolling() {
 //                                UI
 // =====================================================================
 
-const FLOORS_AVG_WINDOW = 11;
-
 function formatFloorTime(t) {
   if (typeof t !== 'string' || !t) return '';
   const m = /^(\d+):(\d+):(\d+)$/.exec(t);
@@ -373,22 +384,23 @@ function formatAvgTime(totalSeconds) {
 
 const $app          = document.getElementById('app');
 const $viewToggles  = document.querySelectorAll('.view-toggle');
-const $floorsCount  = document.getElementById('floors-count');
 const $floorsAvg    = document.getElementById('floors-avg');
 const $floorsList   = document.getElementById('floors-list');
 const $floorsExport = document.getElementById('floors-export');
 const $floorsClear  = document.getElementById('floors-clear');
 const $maxFloors    = document.getElementById('settings-max-floors');
+const $avgWindow    = document.getElementById('settings-avg-window');
+const $headerTitle  = document.getElementById('settings-header-title');
+const $windowTitle  = document.getElementById('window-title');
 const $calBtn       = document.getElementById('cal-btn-winterface');
 const $calClear     = document.getElementById('cal-clear-winterface');
 const $status       = document.getElementById('status');
 
 function renderFloors(log) {
-  if ($floorsCount) $floorsCount.textContent = String(log.length);
   if (!$floorsList) return;
 
   if ($floorsAvg) {
-    const win = log.slice(-FLOORS_AVG_WINDOW)
+    const win = log.slice(-settings.avgWindow)
       .filter(f => typeof f.timeSeconds === 'number' && f.timeSeconds > 0);
     if (win.length === 0) {
       $floorsAvg.hidden = true;
@@ -396,9 +408,22 @@ function renderFloors(log) {
     } else {
       const mean = win.reduce((a, f) => a + f.timeSeconds, 0) / win.length;
       $floorsAvg.hidden = false;
-      $floorsAvg.textContent = `avg ${formatAvgTime(mean)}`;
-      $floorsAvg.title = `mean of last ${win.length} floor(s)`
-        + (win.length < FLOORS_AVG_WINDOW ? ` (fewer than ${FLOORS_AVG_WINDOW} available)` : '');
+      const isRolling = win.length >= settings.avgWindow;
+      const prefix = isRolling ? '↻ ' : '';
+      const countPart = `${win.length}/${settings.avgWindow}`;
+      const time = formatAvgTime(mean);
+      // Wrap the middle dot in a span so CSS padding can give half-space
+      // gaps on each side — tighter than full spaces but visually symmetric.
+      $floorsAvg.innerHTML = `${prefix}${countPart}<span class="avg-sep">·</span>${time}`;
+      const txt = `${prefix}${countPart}· ${time}`;
+      $floorsAvg.title = isRolling
+        ? `rolling mean of the last ${settings.avgWindow} floors`
+        : `mean of last ${win.length} of ${settings.avgWindow} floors`;
+      // Auto-shrink font when content is long to avoid heading wrap at minWidth 140.
+      // Thresholds chosen empirically: 12px Consolas at ~7px/char keeps a 15-char
+      // pill (e.g. "11/11 · 12:34.5") under the 128px content budget; longer
+      // strings need a smaller font to stay on one line.
+      $floorsAvg.style.fontSize = txt.length >= 17 ? '10px' : txt.length >= 15 ? '11px' : '';
     }
   }
 
@@ -505,6 +530,29 @@ if ($maxFloors) {
     settings.maxFloors = floor.getMaxFloors();
     saveSettings();
     $maxFloors.value = String(settings.maxFloors);
+  });
+}
+
+if ($avgWindow) {
+  $avgWindow.value = String(settings.avgWindow);
+  $avgWindow.addEventListener('change', () => {
+    const n = parseInt($avgWindow.value, 10);
+    if (!isFinite(n) || n < 2) { $avgWindow.value = String(settings.avgWindow); return; }
+    settings.avgWindow = Math.min(100, n);
+    saveSettings();
+    $avgWindow.value = String(settings.avgWindow);
+    renderFloors(floor.getAll());
+  });
+}
+
+if ($headerTitle) {
+  $headerTitle.value = settings.headerTitle;
+  if ($windowTitle) $windowTitle.textContent = settings.headerTitle;
+  $headerTitle.addEventListener('input', () => {
+    const v = $headerTitle.value.slice(0, HEADER_TITLE_MAX_LEN);
+    settings.headerTitle = v;
+    if ($windowTitle) $windowTitle.textContent = v;
+    saveSettings();
   });
 }
 

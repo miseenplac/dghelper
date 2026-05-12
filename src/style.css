@@ -23,6 +23,22 @@ body {
   height: 100%;
 }
 
+.window-title {
+  font-size: 13px;
+  color: #c9a86a;
+  font-weight: 500;
+  font-style: italic;
+  letter-spacing: 0.5px;
+  padding: 2px 4px;
+  margin: 0 0 4px 0;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.window-title:empty { display: none; }
+
 /* Both blocks share the flex-column pattern so whichever is the active
    view (floors / settings) fills the window. Floors needs it because
    the list inside flex-grows; settings inherits the pattern for
@@ -66,7 +82,6 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: auto;  /* push to right edge of h2 row */
 }
 .icon-btn:hover { background: #2a2a2a; color: #ccc; border-color: #555; }
 
@@ -74,6 +89,7 @@ body {
 
 #app[data-view="floors"] .settings-block { display: none; }
 #app[data-view="settings"] .floors-block { display: none; }
+#app[data-view="settings"] .window-title { display: none; }
 
 /* ---- Block + heading ---------------------------------------------- */
 
@@ -100,9 +116,14 @@ body {
 }
 .avg-display {
   background: #2f2815;
-  color: #f5e0a8;
+  color: #d8c590;
+  font-family: Consolas, "Courier New", monospace;
   font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  padding: 2px 8px;
+  white-space: nowrap;
 }
+.avg-sep { padding: 0 4px; }
 
 /* ---- Floor list ---------------------------------------------------- */
 
@@ -165,6 +186,8 @@ body {
   margin-top: 4px;
 }
 
+.cal-buttons .icon-btn { margin-left: auto; }
+
 /* ---- mini-btn (the small action buttons) -------------------------- */
 
 .mini-btn {
@@ -214,6 +237,25 @@ body {
 }
 .setting-row input[type="number"]:focus { border-color: #4f6cab; background: #262626; }
 
+.setting-row.setting-row-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.setting-row input[type="text"] {
+  width: 100%;
+  background: #1f1f1f;
+  border: 1px solid #333;
+  color: #d0d0d0;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  border-radius: 3px;
+  outline: none;
+  box-sizing: border-box;
+}
+.setting-row input[type="text"]:focus { border-color: #4f6cab; background: #262626; }
+
 /* Calibration section — vertical stack so nothing clips at narrow widths.
    Hint first (when to use it), buttons next (the action), status last
    (current state). Each row is full-width and wraps freely. */
@@ -235,6 +277,7 @@ body {
 .cal-buttons {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .cal-btn {
