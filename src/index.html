@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>dghelper</title>
+</head>
+<body>
+  <div id="app" data-view="floors">
+    <section class="block floors-block">
+      <h2>
+        Floors <span class="count" id="floors-count">0</span>
+        <span class="count avg-display" id="floors-avg" title="Mean of the most recent 11 floors" hidden></span>
+        <button class="icon-btn view-toggle" title="Settings" aria-label="Settings">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+      </h2>
+      <ul id="floors-list"></ul>
+      <div class="floors-actions">
+        <button id="floors-export" class="mini-btn" title="Copy the floor log to clipboard as CSV.">Export</button>
+        <button id="floors-clear" class="mini-btn" title="Clear the entire floor log. Click once to arm, click again within 3s to confirm.">Clear</button>
+      </div>
+    </section>
+
+    <section class="block settings-block">
+      <h2>
+        Settings
+        <button class="icon-btn view-toggle" title="Close settings" aria-label="Close settings">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+      </h2>
+      <label class="setting-row">
+        <span class="setting-label">Max floors</span>
+        <input type="number" id="settings-max-floors" min="10" max="1000" step="10" value="1000">
+      </label>
+
+      <div class="cal-section">
+        <p class="cal-hint">If Alt1 isn&apos;t detecting the end-of-dungeon dialog, open it in-game first then click Calibrate.</p>
+        <div class="cal-buttons">
+          <button id="cal-btn-winterface" class="cal-btn" title="Captures the current pixel RGBs at the sentinel positions and saves them as your personal override.">Calibrate</button>
+          <button id="cal-clear-winterface" class="cal-btn cal-clear" title="Discard your calibrated values and fall back to the built-in defaults.">Reset</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="status"></div>
+  </div>
+</body>
+</html>

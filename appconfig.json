@@ -1,0 +1,12 @@
+{
+  "appName": "dghelper",
+  "description": "RS3 Dungeoneering floor-times tracker. Detects the end-of-dungeon dialog via sentinel pixels and logs each floor's timer.",
+  "appUrl": "./index.html",
+  "configUrl": "./appconfig.json",
+  "iconUrl": "./icon.png",
+  "defaultWidth": 240,
+  "defaultHeight": 360,
+  "minWidth": 200,
+  "maxWidth": 400,
+  "permissions": "pixel"
+}

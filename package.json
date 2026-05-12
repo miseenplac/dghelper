@@ -1,0 +1,22 @@
+{
+  "name": "dghelper",
+  "version": "0.2.0",
+  "description": "RS3 Dungeoneering floor-times tracker for Alt1 Toolkit",
+  "private": true,
+  "scripts": {
+    "build": "webpack --mode production",
+    "dev": "webpack serve --mode development"
+  },
+  "dependencies": {
+    "alt1": "^0.1.2"
+  },
+  "devDependencies": {
+    "copy-webpack-plugin": "^12.0.2",
+    "css-loader": "^6.10.0",
+    "html-webpack-plugin": "^5.6.0",
+    "style-loader": "^3.3.4",
+    "webpack": "^5.90.3",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^5.0.2"
+  }
+}

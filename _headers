@@ -1,0 +1,16 @@
+# Cloudflare Pages cache-control rules. Mirrors what netlify.toml had.
+# Bundle filename is content-hashed (bundle.<hash>.js per webpack config),
+# so it's safe to cache forever; index.html / appconfig.json / install.html
+# change rarely but must NOT be cached hard so Alt1 picks up updates.
+
+/bundle.*.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/index.html
+  Cache-Control: no-cache
+
+/appconfig.json
+  Cache-Control: no-cache
+
+/install.html
+  Cache-Control: no-cache
