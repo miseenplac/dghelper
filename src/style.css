@@ -1,5 +1,7 @@
 * { box-sizing: border-box; }
 
+html, body { height: 100%; }
+
 body {
   margin: 0;
   padding: 0;
@@ -10,7 +12,26 @@ body {
   overflow-x: hidden;
 }
 
-#app { padding: 6px 6px 8px; }
+/* App fills viewport, flex column so the active block can flex-grow
+   and the floor list inside it can fill available vertical space. */
+#app {
+  padding: 6px 6px 8px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Both blocks share the flex-column pattern so whichever is the active
+   view (floors / settings) fills the window. Floors needs it because
+   the list inside flex-grows; settings inherits the pattern for
+   consistency though its content is short. */
+.floors-block,
+.settings-block {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
 
 /* ---- Status — collapses to zero space when empty -------------------- */
 
@@ -84,11 +105,16 @@ body {
 
 /* ---- Floor list ---------------------------------------------------- */
 
+/* Flex-grows to fill the floors-block's vertical space. min-height: 0
+   is required so the list can shrink past its content height inside
+   a flex container, otherwise the floors-actions row gets pushed
+   off-screen on narrow window heights. */
 #floors-list {
   list-style: none;
   margin: 0;
   padding: 0 2px 0 0;
-  max-height: 240px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
 }
 
