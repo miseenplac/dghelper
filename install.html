@@ -32,66 +32,20 @@
       box-shadow: 0 2px 6px rgba(0,0,0,0.5);
     }
     .btn:hover { background: #32b85a; }
-    code {
-      background: #2a2a2a;
-      color: #f5c842;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-family: Consolas, monospace;
-    }
-    .note {
-      margin-top: 36px;
-      padding-top: 14px;
-      border-top: 1px solid #333;
-      color: #888;
-      font-size: 12px;
-    }
   </style>
 </head>
 <body>
   <h1>dghelper</h1>
-  <p>RS3 Dungeoneering floor-times tracker.<br>Click the button below to install this app into Alt1.</p>
+  <p>RS3 Dungeoneering floor-times tracker.</p>
 
   <a class="btn" id="install-btn" href="#">Add to Alt1</a>
 
-  <div id="msg" class="note"></div>
-
-  <div class="note">
-    If this page isn&rsquo;t opened <em>inside Alt1&rsquo;s built-in browser</em> the button won&rsquo;t work.<br><br>
-    Manifest URL: <code id="cfg-url"></code>
-  </div>
-
   <script>
+    // `alt1://addapp/<configUrl>` is the canonical install path across
+    // Alt1 versions — Alt1's CEF intercepts the protocol URL and shows
+    // the install dialog.
     const configUrl = window.location.origin + '/appconfig.json';
-    document.getElementById('cfg-url').textContent = configUrl;
-
-    // The `alt1://addapp/<configUrl>` protocol URL is the canonical
-    // "Add this app" path across Alt1 versions. Alt1's CEF intercepts
-    // it and shows the install dialog.
-    const installUrl = 'alt1://addapp/' + configUrl;
-    const installBtn = document.getElementById('install-btn');
-    installBtn.href = installUrl;
-
-    const msg = document.getElementById('msg');
-    function say(text, color) {
-      msg.textContent = text;
-      msg.style.color = color || '#bbb';
-    }
-
-    installBtn.addEventListener('click', () => {
-      say('Opening Alt1 install dialog… if nothing appears, make sure this page is inside Alt1’s built-in browser.', '#6ee09a');
-      setTimeout(() => {
-        if (window.alt1 && typeof alt1.identifyAppUrl === 'function') {
-          try { alt1.identifyAppUrl(configUrl); } catch (_) {}
-        }
-      }, 500);
-    });
-
-    if (window.alt1) {
-      say('Alt1 detected — click the button to install.', '#6ee09a');
-    } else {
-      say('Not running inside Alt1’s built-in browser. Open Alt1 → browse to this page inside Alt1.', '#f5c842');
-    }
+    document.getElementById('install-btn').href = 'alt1://addapp/' + configUrl;
   </script>
 </body>
 </html>
